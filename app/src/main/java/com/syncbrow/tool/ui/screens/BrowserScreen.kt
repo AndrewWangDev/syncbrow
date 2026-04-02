@@ -61,6 +61,15 @@ import java.util.concurrent.TimeUnit
 import java.io.ByteArrayInputStream
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import com.syncbrow.tool.util.PasswordUtils
+import kotlinx.coroutines.withContext
 
 private object BrowserSettingsHolder {
     @Volatile
@@ -112,6 +121,40 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
     
     var showShortcutDialog by remember { mutableStateOf(false) }
     var shortcutName by remember { mutableStateOf("") }
+    var currentFavicon by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Password Manager states for Browser
+    val pmEncryptionEnabled by settingsRepository.pmEncryptionEnabledFlow.collectAsState(initial = false)
+    val pmRealPasswordHash by settingsRepository.pmRealPasswordHashFlow.collectAsState(initial = "")
+    val pmEmergencyPasswordHash by settingsRepository.pmEmergencyPasswordHashFlow.collectAsState(initial = "")
+    val pmFailedAttempts by settingsRepository.pmFailedAttemptsFlow.collectAsState(initial = 0)
+    val pmLockoutTimestamp by settingsRepository.pmLockoutTimestampFlow.collectAsState(initial = 0L)
+    val pmLastAuthTimestamp by settingsRepository.pmLastAuthTimestampFlow.collectAsState(initial = 0L)
+    var showBrowserPmVerifyDialog by remember { mutableStateOf(false) }
+    var browserPmInput by remember { mutableStateOf("") }
+    var showBrowserPwText by remember { mutableStateOf(false) }
+    var showBrowserPmPanel by remember { mutableStateOf(false) }
+    var browserPmEditingPassword by remember { mutableStateOf<PasswordEntity?>(null) }
+    var showBrowserPmAddEdit by remember { mutableStateOf(false) }
+    var showBrowserPmDeleteConfirm by remember { mutableStateOf(false) }
+    var browserPmDeleteTarget by remember { mutableStateOf<PasswordEntity?>(null) }
+    var browserPmInputSite by remember { mutableStateOf("") }
+    var browserPmInputUsername by remember { mutableStateOf("") }
+    var browserPmInputPassword by remember { mutableStateOf("") }
+
+    // Extract host from current URL for password matching
+    val currentHost = remember(currentDisplayUrl) {
+        try {
+            java.net.URI(currentDisplayUrl).host ?: currentDisplayUrl
+        } catch (_: Exception) {
+            currentDisplayUrl
+        }
+    }
+
+    val passwordDao = remember(db) { db.passwordDao() }
+    val sitePasswords by remember(passwordDao, currentHost) {
+        passwordDao.getPasswordsBySite(currentHost)
+    }.collectAsState(initial = emptyList())
     
     // Stable WebView instance that persists across recompositions
     val webView = remember { 
@@ -361,6 +404,9 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                         override fun onProgressChanged(view: WebView?, newProgress: Int) {
                             progress = newProgress / 100f
                         }
+                        override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+                            currentFavicon = icon
+                        }
                     }
 
                     webView.setDownloadListener { downloadUrl, _, contentDisposition, mimeType, _ ->
@@ -604,6 +650,34 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                     .padding(16.dp),
                 horizontalAlignment = Alignment.End
             ) {
+                // Password Manager Lock FAB
+                FloatingActionButton(
+                    onClick = {
+                        if (pmEncryptionEnabled && pmRealPasswordHash.isNotEmpty()) {
+                            val now = System.currentTimeMillis()
+                            if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp < 3600_000L) {
+                                Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
+                            } else {
+                                if (now - pmLastAuthTimestamp < 30 * 60 * 1000L) {
+                                    showBrowserPmPanel = true
+                                } else {
+                                    if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp >= 3600_000L) {
+                                        scope.launch(Dispatchers.IO) { settingsRepository.resetPmLockout() }
+                                    }
+                                    browserPmInput = ""
+                                    showBrowserPwText = false
+                                    showBrowserPmVerifyDialog = true
+                                }
+                            }
+                        } else {
+                            showBrowserPmPanel = true
+                        }
+                    },
+                    modifier = Modifier.padding(bottom = 8.dp)
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = "Passwords")
+                }
+
                 // Shortcut FAB
                 FloatingActionButton(
                     onClick = {
@@ -654,7 +728,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    createShortcut(context, currentDisplayUrl, shortcutName)
+                    createShortcut(context, currentDisplayUrl, shortcutName, currentFavicon)
                     showShortcutDialog = false
                 }) {
                     Text(stringResource(R.string.shortcut_add_button))
@@ -703,15 +777,322 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             }
         )
     }
+
+    // Browser Password Manager - Verification Dialog
+    if (showBrowserPmVerifyDialog) {
+        AlertDialog(
+            onDismissRequest = { showBrowserPmVerifyDialog = false },
+            title = { Text(stringResource(R.string.pm_enter_password)) },
+            text = {
+                OutlinedTextField(
+                    value = browserPmInput,
+                    onValueChange = { browserPmInput = it },
+                    label = { Text(stringResource(R.string.pm_password)) },
+                    singleLine = true,
+                    visualTransformation = if (showBrowserPwText) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showBrowserPwText = !showBrowserPwText }) {
+                            Icon(
+                                if (showBrowserPwText) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = null
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val inputHash = SettingsRepository.sha256(browserPmInput)
+                    when {
+                        inputHash == pmRealPasswordHash -> {
+                            scope.launch(Dispatchers.IO) {
+                                settingsRepository.resetPmLockout()
+                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                            }
+                            Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
+                            showBrowserPmVerifyDialog = false
+                            showBrowserPmPanel = true
+                        }
+                        pmEmergencyPasswordHash.isNotEmpty() && inputHash == pmEmergencyPasswordHash -> {
+                            scope.launch(Dispatchers.IO) {
+                                db.passwordDao().deleteAllPasswords()
+                                settingsRepository.resetPmLockout()
+                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                            }
+                            Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
+                            showBrowserPmVerifyDialog = false
+                            showBrowserPmPanel = true
+                        }
+                        else -> {
+                            val newAttempts = pmFailedAttempts + 1
+                            scope.launch(Dispatchers.IO) {
+                                if (newAttempts >= 10) {
+                                    settingsRepository.setPmFailedAttempts(newAttempts)
+                                    settingsRepository.setPmLockoutTimestamp(System.currentTimeMillis())
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
+                                        showBrowserPmVerifyDialog = false
+                                    }
+                                } else {
+                                    settingsRepository.setPmFailedAttempts(newAttempts)
+                                    withContext(Dispatchers.Main) {
+                                        val remaining = 10 - newAttempts
+                                        Toast.makeText(context, context.getString(R.string.pm_password_wrong, remaining), Toast.LENGTH_SHORT).show()
+                                        browserPmInput = ""
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }) {
+                    Text(stringResource(R.string.pm_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBrowserPmVerifyDialog = false }) {
+                    Text(stringResource(R.string.pm_cancel))
+                }
+            }
+        )
+    }
+
+    // Browser Password Manager - Site Passwords Panel
+    if (showBrowserPmPanel) {
+        AlertDialog(
+            onDismissRequest = { showBrowserPmPanel = false },
+            title = { Text(stringResource(R.string.pm_title)) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (sitePasswords.isEmpty()) {
+                        Text(
+                            stringResource(R.string.pm_no_site_passwords),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
+                    } else {
+                        LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
+                            items(sitePasswords) { pw ->
+                                var showThisPw by remember { mutableStateOf(false) }
+                                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(pw.username, style = MaterialTheme.typography.bodyMedium)
+                                            Text(
+                                                if (showThisPw) pw.password else "••••••••",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.outline
+                                            )
+                                        }
+                                        IconButton(onClick = {
+                                            showThisPw = !showThisPw
+                                            if (showThisPw) {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("password", pw.password))
+                                                Toast.makeText(context, context.getString(R.string.pm_password_copied), Toast.LENGTH_SHORT).show()
+                                            }
+                                        }) {
+                                            Icon(
+                                                if (showThisPw) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        IconButton(onClick = {
+                                            browserPmEditingPassword = pw
+                                            browserPmInputSite = pw.siteName
+                                            browserPmInputUsername = pw.username
+                                            browserPmInputPassword = pw.password
+                                            showBrowserPmAddEdit = true
+                                        }) {
+                                            Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                        IconButton(onClick = {
+                                            browserPmDeleteTarget = pw
+                                            showBrowserPmDeleteConfirm = true
+                                        }) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    browserPmEditingPassword = null
+                    browserPmInputSite = currentHost
+                    browserPmInputUsername = ""
+                    browserPmInputPassword = ""
+                    showBrowserPmAddEdit = true
+                }) {
+                    Text(stringResource(R.string.pm_add))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBrowserPmPanel = false }) {
+                    Text(stringResource(R.string.pm_cancel))
+                }
+            }
+        )
+    }
+
+    // Browser PM - Add/Edit Dialog
+    if (showBrowserPmAddEdit) {
+        val isEdit = browserPmEditingPassword != null
+        AlertDialog(
+            onDismissRequest = { showBrowserPmAddEdit = false },
+            title = { Text(stringResource(if (isEdit) R.string.pm_edit else R.string.pm_add)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = browserPmInputSite,
+                        onValueChange = { browserPmInputSite = it },
+                        label = { Text(stringResource(R.string.pm_site_name)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = browserPmInputUsername,
+                        onValueChange = { browserPmInputUsername = it },
+                        label = { Text(stringResource(R.string.pm_username)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = browserPmInputPassword,
+                        onValueChange = { browserPmInputPassword = it },
+                        label = { Text(stringResource(R.string.pm_password)) },
+                        singleLine = true,
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                browserPmInputPassword = PasswordUtils.generateStrongPassword()
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("password", browserPmInputPassword))
+                                Toast.makeText(context, context.getString(R.string.pm_password_copied), Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Generate")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Strength Indicator
+                    val strengthResult = PasswordUtils.evaluateStrength(browserPmInputPassword)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        LinearProgressIndicator(
+                            progress = when(strengthResult.strength) {
+                                PasswordUtils.Strength.VERY_WEAK -> 0.1f
+                                PasswordUtils.Strength.WEAK -> 0.3f
+                                PasswordUtils.Strength.NORMAL -> 0.5f
+                                PasswordUtils.Strength.STRONG -> 0.8f
+                                PasswordUtils.Strength.VERY_STRONG -> 1.0f
+                            },
+                            modifier = Modifier.weight(1f).height(6.dp),
+                            color = strengthResult.color,
+                            trackColor = strengthResult.color.copy(alpha = 0.2f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = strengthResult.labelRes,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = strengthResult.color
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (browserPmInputSite.isNotBlank() && browserPmInputUsername.isNotBlank() && browserPmInputPassword.isNotBlank()) {
+                        scope.launch(Dispatchers.IO) {
+                            if (isEdit) {
+                                passwordDao.updatePassword(browserPmEditingPassword!!.copy(
+                                    siteName = browserPmInputSite,
+                                    username = browserPmInputUsername,
+                                    password = browserPmInputPassword
+                                ))
+                            } else {
+                                passwordDao.insertPassword(PasswordEntity(
+                                    siteName = browserPmInputSite,
+                                    username = browserPmInputUsername,
+                                    password = browserPmInputPassword
+                                ))
+                            }
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
+                                showBrowserPmAddEdit = false
+                            }
+                        }
+                    }
+                }) {
+                    Text(stringResource(R.string.pm_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBrowserPmAddEdit = false }) {
+                    Text(stringResource(R.string.pm_cancel))
+                }
+            }
+        )
+    }
+
+    // Browser PM - Delete Confirm
+    if (showBrowserPmDeleteConfirm && browserPmDeleteTarget != null) {
+        AlertDialog(
+            onDismissRequest = { showBrowserPmDeleteConfirm = false },
+            title = { Text(stringResource(R.string.pm_delete)) },
+            text = { Text(stringResource(R.string.pm_confirm_delete)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val toDelete = browserPmDeleteTarget!!
+                    showBrowserPmDeleteConfirm = false
+                    browserPmDeleteTarget = null
+                    scope.launch(Dispatchers.IO) {
+                        passwordDao.deletePassword(toDelete)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, context.getString(R.string.pm_password_deleted), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }) {
+                    Text(stringResource(R.string.pm_delete), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBrowserPmDeleteConfirm = false }) {
+                    Text(stringResource(R.string.pm_cancel))
+                }
+            }
+        )
+    }
 }
 
-fun createShortcut(context: Context, url: String, name: String) {
+fun createShortcut(context: Context, url: String, name: String, favicon: Bitmap? = null) {
     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url), context, MainActivity::class.java)
     intent.putExtra("url", url)
     
+    val icon = if (favicon != null) {
+        try {
+            IconCompat.createWithBitmap(favicon)
+        } catch (_: Exception) {
+            IconCompat.createWithResource(context, R.mipmap.ic_launcher)
+        }
+    } else {
+        IconCompat.createWithResource(context, R.mipmap.ic_launcher)
+    }
+    
     val shortcut = ShortcutInfoCompat.Builder(context, url)
         .setShortLabel(name)
-        .setIcon(IconCompat.createWithResource(context, R.mipmap.ic_launcher))
+        .setIcon(icon)
         .setIntent(intent)
         .build()
     

@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -22,7 +25,25 @@ import androidx.navigation.NavController
 import com.syncbrow.tool.R
 import com.syncbrow.tool.data.AppDatabase
 import com.syncbrow.tool.data.SettingsRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.draw.rotate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,6 +68,17 @@ fun SettingsScreen(navController: NavController) {
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showSearchEngineDialog by remember { mutableStateOf(false) }
+    var showNetDiagDialog by remember { mutableStateOf(false) }
+
+    // Password Manager state (top-level for dialog access)
+    val pmEncryptionEnabled by settingsRepository.pmEncryptionEnabledFlow.collectAsState(initial = false)
+    val pmRealPasswordHash by settingsRepository.pmRealPasswordHashFlow.collectAsState(initial = "")
+    val pmEmergencyPasswordHash by settingsRepository.pmEmergencyPasswordHashFlow.collectAsState(initial = "")
+    val pmFailedAttempts by settingsRepository.pmFailedAttemptsFlow.collectAsState(initial = 0)
+    val pmLockoutTimestamp by settingsRepository.pmLockoutTimestampFlow.collectAsState(initial = 0L)
+    val pmLastAuthTimestamp by settingsRepository.pmLastAuthTimestampFlow.collectAsState(initial = 0L)
+    var showPmPasswordDialog by remember { mutableStateOf(false) }
+    var pmInputPassword by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -97,6 +129,45 @@ fun SettingsScreen(navController: NavController) {
                 })
             },
             modifier = Modifier.clickable { showSearchEngineDialog = true }
+        )
+
+        // ---- Account & Password ----
+        Text(
+            text = stringResource(R.string.settings_category_account),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
+        )
+
+        // Password Manager
+
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.settings_password_manager)) },
+            supportingContent = { Text(stringResource(R.string.settings_password_manager_desc)) },
+            trailingContent = { Icon(Icons.Default.KeyboardArrowRight, contentDescription = null) },
+            modifier = Modifier.clickable {
+                if (pmEncryptionEnabled && pmRealPasswordHash.isNotEmpty()) {
+                    // Check lockout
+                    val now = System.currentTimeMillis()
+                    if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp < 3600_000L) {
+                        Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
+                    } else {
+                        // Check if within 30-minute session
+                        if (now - pmLastAuthTimestamp < 30 * 60 * 1000L) {
+                            navController.navigate("password_manager")
+                        } else {
+                            // Reset lockout if 1 hour has passed
+                            if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp >= 3600_000L) {
+                                scope.launch(kotlinx.coroutines.Dispatchers.IO) { settingsRepository.resetPmLockout() }
+                            }
+                            pmInputPassword = ""
+                            showPmPasswordDialog = true
+                        }
+                    }
+                } else {
+                    navController.navigate("password_manager")
+                }
+            }
         )
 
         Text(
@@ -167,7 +238,15 @@ fun SettingsScreen(navController: NavController) {
             modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
         )
 
-        // CN Acceleration Toggle - REMOVED PER USER REQUEST
+        // Network Diagnosis
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.settings_net_diagnosis)) },
+            supportingContent = { Text(stringResource(R.string.settings_net_diagnosis_desc)) },
+            leadingContent = { Icon(Icons.Default.NetworkCheck, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+            modifier = Modifier.clickable { showNetDiagDialog = true },
+            trailingContent = { Icon(Icons.Default.KeyboardArrowRight, contentDescription = null) }
+        )
+
         // Enable Copy Paste Toggle
         ListItem(
             headlineContent = { Text(stringResource(R.string.settings_enable_copy_paste)) },
@@ -287,7 +366,7 @@ fun SettingsScreen(navController: NavController) {
                     )
                     engines.forEach { (mode, name) ->
                         Text(name, modifier = Modifier.fillMaxWidth().clickable {
-                            scope.launch { settingsRepository.setSearchEngine(mode) }
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) { settingsRepository.setSearchEngine(mode) }
                             showSearchEngineDialog = false
                         }.padding(16.dp))
                     }
@@ -295,5 +374,267 @@ fun SettingsScreen(navController: NavController) {
             },
             confirmButton = {}
         )
+    }
+
+    // Password Manager Verification Dialog
+    if (showPmPasswordDialog) {
+        var showPwText by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { showPmPasswordDialog = false },
+            title = { Text(stringResource(R.string.pm_enter_password)) },
+            text = {
+                OutlinedTextField(
+                    value = pmInputPassword,
+                    onValueChange = { pmInputPassword = it },
+                    label = { Text(stringResource(R.string.pm_password)) },
+                    singleLine = true,
+                    visualTransformation = if (showPwText) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showPwText = !showPwText }) {
+                            Icon(
+                                if (showPwText) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = null
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val inputHash = SettingsRepository.sha256(pmInputPassword)
+                    when {
+                        inputHash == pmRealPasswordHash -> {
+                            // Correct real password
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                settingsRepository.resetPmLockout()
+                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                            }
+                            Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
+                            showPmPasswordDialog = false
+                            navController.navigate("password_manager")
+                        }
+                        pmEmergencyPasswordHash.isNotEmpty() && inputHash == pmEmergencyPasswordHash -> {
+                            // Emergency password: wipe all passwords silently, navigate normally
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                val pmDb = AppDatabase.getDatabase(context)
+                                pmDb.passwordDao().deleteAllPasswords()
+                                settingsRepository.resetPmLockout()
+                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                            }
+                            Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
+                            showPmPasswordDialog = false
+                            navController.navigate("password_manager")
+                        }
+                        else -> {
+                            // Wrong password
+                            val newAttempts = pmFailedAttempts + 1
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                if (newAttempts >= 10) {
+                                    settingsRepository.setPmFailedAttempts(newAttempts)
+                                    settingsRepository.setPmLockoutTimestamp(System.currentTimeMillis())
+                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
+                                        showPmPasswordDialog = false
+                                    }
+                                } else {
+                                    settingsRepository.setPmFailedAttempts(newAttempts)
+                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        val remaining: Int = 10 - newAttempts
+                                        Toast.makeText(context, context.getString(R.string.pm_password_wrong, remaining), Toast.LENGTH_SHORT).show()
+                                        pmInputPassword = ""
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }) {
+                    Text(stringResource(R.string.bookmark_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPmPasswordDialog = false }) {
+                    Text(stringResource(R.string.bookmark_cancel))
+                }
+            }
+        )
+    }
+
+    if (showNetDiagDialog) {
+        NetworkDiagnosisDialog { showNetDiagDialog = false }
+    }
+}
+
+@Composable
+fun NetworkDiagnosisDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    
+    var isChecking by remember { mutableStateOf(true) }
+    
+    // Status tracking
+    var statusOnline by remember { mutableStateOf(0) } // 0:Checking, 1:Yes, 2:No
+    var statusDns by remember { mutableStateOf(0) }    // 0:Checking, 1:Normal, 2:Abnormal, 3:Skipped
+    var statusIpConn by remember { mutableStateOf(0) } // 0:Checking, 1:Normal, 2:Abnormal, 3:Skipped
+    var statusPortConn by remember { mutableStateOf(0) } // 0:Checking, 1:Normal, 2:Abnormal, 3:Skipped
+    var statusGfw by remember { mutableStateOf(0) }    // 0:Checking, 1:Not Exist, 2:Exists, 3:Skipped
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            // 1. Online Check
+            val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val activeNetwork = cm.activeNetwork
+            val capabilities = cm.getNetworkCapabilities(activeNetwork)
+            val isOnline = capabilities != null && (
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            )
+            
+            statusOnline = if (isOnline) 1 else 2
+
+            // 2. DNS Check (dns.google)
+            try {
+                val addresses = InetAddress.getAllByName("dns.google")
+                statusDns = if (addresses.isNotEmpty()) 1 else 2
+            } catch (_: Exception) {
+                statusDns = 2
+            }
+
+            // 3. IP Connectivity (Apple - 17.253.144.10)
+            try {
+                val socket = Socket()
+                socket.connect(InetSocketAddress("17.253.144.10", 443), 4000)
+                socket.close()
+                statusIpConn = 1
+                statusPortConn = 1 // Socket check covers port connectivity
+            } catch (_: Exception) {
+                statusIpConn = 2
+                statusPortConn = 2
+            }
+
+            // 5. GFW Status (google.com)
+            try {
+                val socketGfw = Socket()
+                socketGfw.connect(InetSocketAddress("google.com", 443), 4000)
+                socketGfw.close()
+                statusGfw = 1
+            } catch (_: Exception) {
+                statusGfw = 2
+            }
+
+            isChecking = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isChecking) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp).padding(end = 12.dp), strokeWidth = 2.dp)
+                }
+                Text(stringResource(if (isChecking) R.string.net_diag_checking else R.string.net_diag_title))
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                DiagItem(stringResource(R.string.net_diag_is_online), statusOnline, listOf(R.string.net_diag_status_yes, R.string.net_diag_status_no))
+                DiagItem(stringResource(R.string.net_diag_dns), statusDns, listOf(R.string.net_diag_status_normal, R.string.net_diag_status_abnormal))
+                DiagItem(stringResource(R.string.net_diag_ip_conn), statusIpConn, listOf(R.string.net_diag_status_normal, R.string.net_diag_status_abnormal))
+                DiagItem(stringResource(R.string.net_diag_port_conn), statusPortConn, listOf(R.string.net_diag_status_normal, R.string.net_diag_status_abnormal))
+                DiagItem(stringResource(R.string.net_diag_gfw), statusGfw, listOf(R.string.net_diag_status_not_exist, R.string.net_diag_status_exist))
+
+                if (!isChecking) {
+                    Divider(modifier = Modifier.padding(vertical = 12.dp))
+                    Text(
+                        stringResource(R.string.net_diag_conclusion),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    
+                    val (conclusionRes, conclusionColor) = when {
+                        statusOnline == 2 -> R.string.net_diag_conclusion_offline to MaterialTheme.colorScheme.error
+                        statusOnline == 1 && statusDns == 1 && statusIpConn == 1 && statusPortConn == 1 && statusGfw == 1 -> 
+                            R.string.net_diag_conclusion_all_ok to Color(0xFF4CAF50)
+                        statusOnline == 1 && statusDns == 1 && statusIpConn == 1 && statusPortConn == 1 && statusGfw == 2 ->
+                            R.string.net_diag_conclusion_gfw to Color(0xFFFF9800)
+                        else -> R.string.net_diag_conclusion_problem to MaterialTheme.colorScheme.error
+                    }
+                    
+                    Text(
+                        stringResource(conclusionRes),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = conclusionColor,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.bookmark_cancel))
+            }
+        }
+    )
+}
+
+@Composable
+fun DiagItem(label: String, status: Int, statusStrings: List<Int>) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+        }
+        
+        when (status) {
+            0 -> { // Checking
+                val infiniteTransition = rememberInfiniteTransition()
+                val angle by infiniteTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1200, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart
+                    )
+                )
+                Icon(
+                    Icons.Default.NetworkCheck,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp).rotate(angle),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                )
+            }
+            1 -> { // Normal / Yes / Not Exist
+                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(20.dp))
+                Text(
+                    stringResource(statusStrings[0]),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF4CAF50),
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
+            2 -> { // Abnormal / No / Exist
+                Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                Text(
+                    stringResource(statusStrings[1]),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
+            3 -> { // Skipped
+                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFFC107), modifier = Modifier.size(20.dp))
+                Text(
+                    stringResource(R.string.net_diag_status_unknown),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFFC107),
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
+        }
     }
 }
