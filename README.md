@@ -6,7 +6,7 @@
 
 ## English
 
-SyncBrow is a powerful, privacy-focused Android application that combines a fast QR code scanner with a secure, feature-rich web browser. Built using modern technologies like Jetpack Compose and Material 3, it offers a premium, localized user experience.
+SyncBrow is a privacy-focused Android application that combines a fast QR code scanner with a simple web browser. Built using modern technologies like Jetpack Compose and Material 3, it offers a localized user experience.
 
 ### 📸 Screenshots
 <div align="center">
