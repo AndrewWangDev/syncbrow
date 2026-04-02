@@ -1,6 +1,8 @@
 package com.syncbrow.tool.ui
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -25,6 +27,7 @@ import com.syncbrow.tool.ui.screens.BrowserScreen
 import com.syncbrow.tool.ui.screens.HistoryScreen
 import com.syncbrow.tool.ui.screens.ScanScreen
 import com.syncbrow.tool.ui.screens.SettingsScreen
+import com.syncbrow.tool.ui.screens.PasswordManagerScreen
 import com.syncbrow.tool.data.SettingsRepository
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
@@ -59,7 +62,7 @@ sealed class BottomNavItem(val route: String, val titleRes: Int, val icon: Image
 }
 
 @Composable
-fun MainScreen(initialUrl: String? = null) {
+fun MainScreen(initialUrl: String? = null, mainViewModel: com.syncbrow.tool.ui.MainViewModel? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settingsRepository = remember { SettingsRepository(context) }
@@ -74,24 +77,61 @@ fun MainScreen(initialUrl: String? = null) {
         }
     }
 
-    LaunchedEffect(initialUrl) {
-        if (initialUrl != null) {
-            val encodedUrl = java.net.URLEncoder.encode(initialUrl, "UTF-8")
-            navController.navigate("${BottomNavItem.Browser.route}?url=$encodedUrl") {
-                popUpTo(navController.graph.findStartDestination().id) {
-                    saveState = true
+    // Helper to handle navigation to a URL
+    suspend fun handleNavIntent(url: String) {
+        val startTime = System.currentTimeMillis()
+        val targetRoutePattern = "${BottomNavItem.Browser.route}?url={url}"
+        val encodedUrl = java.net.URLEncoder.encode(url, "UTF-8")
+        val targetRoute = "${BottomNavItem.Browser.route}?url=$encodedUrl"
+
+        while (System.currentTimeMillis() - startTime < 5000) {
+            try {
+                navController.navigate(targetRoute) {
+                    navController.graph.findStartDestination().id.let { id ->
+                        popUpTo(id) { saveState = true }
+                    }
+                    launchSingleTop = true
+                    restoreState = true
                 }
-                launchSingleTop = true
-                restoreState = true
+                
+                // Once navigate is called, verify we are at least on the Browser tab
+                if (navController.currentDestination?.route == targetRoutePattern) {
+                    break
+                }
+                kotlinx.coroutines.delay(100)
+            } catch (e: Exception) {
+                kotlinx.coroutines.delay(200)
             }
         }
     }
+
+    // 1. Initial startup URL
+    LaunchedEffect(initialUrl) {
+        if (initialUrl != null) {
+            handleNavIntent(initialUrl)
+        }
+    }
+
+    // 2. Subsequent new intents while the app is alive
+    LaunchedEffect(mainViewModel) {
+        mainViewModel?.navEvent?.collect { url ->
+            handleNavIntent(url)
+        }
+    }
+    
     val items = listOf(
         BottomNavItem.Scan,
         BottomNavItem.Browser,
         BottomNavItem.History,
         BottomNavItem.Settings
     )
+
+    val startRoute = if (initialUrl != null) {
+        val encodedUrl = java.net.URLEncoder.encode(initialUrl, "UTF-8")
+        "${BottomNavItem.Browser.route}?url=$encodedUrl"
+    } else {
+        BottomNavItem.Scan.route
+    }
 
     Scaffold(
         bottomBar = {
@@ -101,18 +141,20 @@ fun MainScreen(initialUrl: String? = null) {
 
                 items.forEach { item ->
                     NavigationBarItem(
-                        icon = { 
-                            Icon(item.icon, contentDescription = null) 
-                        },
+                        icon = { Icon(item.icon, contentDescription = null) },
                         label = { Text(androidx.compose.ui.res.stringResource(item.titleRes)) },
                         selected = currentRoute == item.route || (currentRoute?.startsWith(item.route) == true),
                         onClick = {
-                            navController.navigate(item.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+                            try {
+                                navController.navigate(item.route) {
+                                    navController.graph.findStartDestination().id.let { id ->
+                                        popUpTo(id) { saveState = true }
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
-                                launchSingleTop = true
-                                restoreState = true
+                            } catch (e: Exception) {
+                                navController.navigate(item.route)
                             }
                         }
                     )
@@ -122,7 +164,7 @@ fun MainScreen(initialUrl: String? = null) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = BottomNavItem.Scan.route,
+            startDestination = startRoute,
             modifier = Modifier.padding(innerPadding)
         ) {
             composable(BottomNavItem.Scan.route) {
@@ -144,19 +186,21 @@ fun MainScreen(initialUrl: String? = null) {
             composable("about") {
                 AboutScreen(navController)
             }
+            composable("password_manager") {
+                PasswordManagerScreen(navController)
+            }
         }
     }
 
     if (showPrivacyDialog) {
         var isChecked by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { /* Prevent dismiss */ },
+            onDismissRequest = { },
             title = { Text(androidx.compose.ui.res.stringResource(com.syncbrow.tool.R.string.privacy_dialog_title)) },
             text = {
                 Column {
                     Text(androidx.compose.ui.res.stringResource(com.syncbrow.tool.R.string.privacy_dialog_content))
                     Spacer(modifier = Modifier.height(16.dp))
-                    
                     Row {
                         TextButton(onClick = {
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.andrewwangdev.com/terms"))
@@ -171,15 +215,13 @@ fun MainScreen(initialUrl: String? = null) {
                             Text(androidx.compose.ui.res.stringResource(com.syncbrow.tool.R.string.about_privacy))
                         }
                     }
-
                     Spacer(modifier = Modifier.height(8.dp))
-
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Checkbox(checked = isChecked, onCheckedChange = { isChecked = it })
                         Text(
                             text = androidx.compose.ui.res.stringResource(com.syncbrow.tool.R.string.privacy_dialog_check),
                             modifier = Modifier.padding(start = 8.dp),
-                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }

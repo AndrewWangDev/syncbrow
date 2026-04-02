@@ -12,8 +12,8 @@ android {
         applicationId = "com.syncbrow.tool"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.3.0-beta"
+        versionCode = 3
+        versionName = "1.4.0-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -61,6 +61,7 @@ dependencies {
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.7.6")
     implementation("androidx.webkit:webkit:1.12.0")
 

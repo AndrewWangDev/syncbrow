@@ -255,7 +255,7 @@ fun HistoryScreen(navController: NavController) {
                 // History Section
                 item {
                     ListItem(
-                        headlineContent = { Text(stringResource(R.string.history_title), style = MaterialTheme.typography.titleLarge) },
+                        headlineContent = { Text(stringResource(R.string.history_subtitle), style = MaterialTheme.typography.titleLarge) },
                         trailingContent = {
                             IconButton(onClick = { historyExpanded = !historyExpanded }) {
                                 Icon(

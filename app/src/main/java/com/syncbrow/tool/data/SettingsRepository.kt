@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +29,17 @@ class SettingsRepository(private val context: Context) {
         val REMOVE_REDIRECT_PROMPT_KEY = booleanPreferencesKey("remove_redirect_prompt")
         val QUIC_ENABLED_KEY = booleanPreferencesKey("quic_enabled")
         val SEARCH_ENGINE_KEY = intPreferencesKey("search_engine") // 0: Google, 1: Bing, 2: Yahoo
+        val PM_ENCRYPTION_ENABLED_KEY = booleanPreferencesKey("pm_encryption_enabled")
+        val PM_REAL_PASSWORD_HASH_KEY = stringPreferencesKey("pm_real_password_hash")
+        val PM_EMERGENCY_PASSWORD_HASH_KEY = stringPreferencesKey("pm_emergency_password_hash")
+        val PM_FAILED_ATTEMPTS_KEY = intPreferencesKey("pm_failed_attempts")
+        val PM_LOCKOUT_TIMESTAMP_KEY = longPreferencesKey("pm_lockout_timestamp")
+        val PM_LAST_AUTH_TIMESTAMP_KEY = longPreferencesKey("pm_last_auth_timestamp")
+
+        fun sha256(input: String): String {
+            val bytes = java.security.MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
     }
 
     val languageFlow: Flow<String> = context.dataStore.data.map { prefs ->
@@ -147,6 +159,74 @@ class SettingsRepository(private val context: Context) {
     suspend fun setSearchEngine(mode: Int) {
         context.dataStore.edit { prefs ->
             prefs[SEARCH_ENGINE_KEY] = mode
+        }
+    }
+
+    // Password Manager
+    val pmEncryptionEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[PM_ENCRYPTION_ENABLED_KEY] ?: false
+    }
+
+    val pmRealPasswordHashFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[PM_REAL_PASSWORD_HASH_KEY] ?: ""
+    }
+
+    val pmEmergencyPasswordHashFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[PM_EMERGENCY_PASSWORD_HASH_KEY] ?: ""
+    }
+
+    val pmFailedAttemptsFlow: Flow<Int> = context.dataStore.data.map { prefs ->
+        prefs[PM_FAILED_ATTEMPTS_KEY] ?: 0
+    }
+
+    val pmLockoutTimestampFlow: Flow<Long> = context.dataStore.data.map { prefs ->
+        prefs[PM_LOCKOUT_TIMESTAMP_KEY] ?: 0L
+    }
+
+    val pmLastAuthTimestampFlow: Flow<Long> = context.dataStore.data.map { prefs ->
+        prefs[PM_LAST_AUTH_TIMESTAMP_KEY] ?: 0L
+    }
+
+    suspend fun setPmEncryptionEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[PM_ENCRYPTION_ENABLED_KEY] = enabled
+        }
+    }
+
+    suspend fun setPmRealPasswordHash(hash: String) {
+        context.dataStore.edit { prefs ->
+            prefs[PM_REAL_PASSWORD_HASH_KEY] = hash
+        }
+    }
+
+    suspend fun setPmEmergencyPasswordHash(hash: String) {
+        context.dataStore.edit { prefs ->
+            prefs[PM_EMERGENCY_PASSWORD_HASH_KEY] = hash
+        }
+    }
+
+    suspend fun setPmFailedAttempts(count: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[PM_FAILED_ATTEMPTS_KEY] = count
+        }
+    }
+
+    suspend fun setPmLockoutTimestamp(timestamp: Long) {
+        context.dataStore.edit { prefs ->
+            prefs[PM_LOCKOUT_TIMESTAMP_KEY] = timestamp
+        }
+    }
+
+    suspend fun setPmLastAuthTimestamp(timestamp: Long) {
+        context.dataStore.edit { prefs ->
+            prefs[PM_LAST_AUTH_TIMESTAMP_KEY] = timestamp
+        }
+    }
+
+    suspend fun resetPmLockout() {
+        context.dataStore.edit { prefs ->
+            prefs[PM_FAILED_ATTEMPTS_KEY] = 0
+            prefs[PM_LOCKOUT_TIMESTAMP_KEY] = 0L
         }
     }
 }

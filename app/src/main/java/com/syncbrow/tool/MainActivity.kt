@@ -15,18 +15,25 @@ import com.syncbrow.tool.data.SettingsRepository
 import com.syncbrow.tool.ui.theme.MySimpleScannerTheme
 import com.syncbrow.tool.ui.MainScreen
 import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.syncbrow.tool.ui.MainViewModel
+
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 
 class MainActivity : AppCompatActivity() {
     private lateinit var settingsRepository: SettingsRepository
     private var isIncognito: Boolean = false
-    private var initialUrl: String? = null
+    private var initialUrlState by mutableStateOf<String?>(null)
+    private val mainViewModel = MainViewModel()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsRepository = SettingsRepository(this)
         
         // Handle initial URL from intent
-        initialUrl = intent.dataString ?: intent.getStringExtra("url")
+        initialUrlState = intent.dataString ?: intent.getStringExtra("url")
         
         // Observe Theme and Incognito settings
         lifecycleScope.launch {
@@ -51,7 +58,7 @@ class MainActivity : AppCompatActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MainScreen(initialUrl = initialUrl)
+                    MainScreen(initialUrl = initialUrlState, mainViewModel = mainViewModel)
                 }
             }
         }
@@ -62,18 +69,8 @@ class MainActivity : AppCompatActivity() {
         setIntent(intent)
         val newUrl = intent?.dataString ?: intent?.getStringExtra("url")
         if (newUrl != null) {
-            initialUrl = newUrl
-            // Re-render to trigger LaunchedEffect in MainScreen
-            setContent {
-                MySimpleScannerTheme {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        MainScreen(initialUrl = initialUrl)
-                    }
-                }
-            }
+            initialUrlState = newUrl
+            mainViewModel.onNewIntent(newUrl)
         }
     }
 
