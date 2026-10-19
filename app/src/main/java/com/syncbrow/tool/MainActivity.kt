@@ -15,6 +15,7 @@ import com.syncbrow.tool.data.SettingsRepository
 import com.syncbrow.tool.ui.theme.MySimpleScannerTheme
 import com.syncbrow.tool.ui.MainScreen
 import kotlinx.coroutines.launch
+import androidx.activity.viewModels
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.syncbrow.tool.ui.MainViewModel
 
@@ -26,7 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsRepository: SettingsRepository
     private var isIncognito: Boolean = false
     private var initialUrlState by mutableStateOf<String?>(null)
-    private val mainViewModel = MainViewModel()
+    private val mainViewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,6 +50,11 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             settingsRepository.incognitoEnabledFlow.collect {
                 isIncognito = it
+                if (it) {
+                    CookieManager.getInstance().removeAllCookies(null)
+                    CookieManager.getInstance().flush()
+                    WebStorage.getInstance().deleteAllData()
+                }
             }
         }
 
@@ -74,9 +80,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        if (isIncognito) {
+            CookieManager.getInstance().removeAllCookies(null)
+            CookieManager.getInstance().flush()
+            WebStorage.getInstance().deleteAllData()
+        }
+    }
+
     override fun onDestroy() {
         if (isIncognito) {
-            // "Exit before clear cookies" - this runs when activity is destroyed.
+            // "Exit before clear cookies"
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
             WebStorage.getInstance().deleteAllData()

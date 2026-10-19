@@ -53,6 +53,23 @@ fun ScanScreen(navController: NavController) {
     var isNavigating by remember { mutableStateOf(false) }
     var torchEnabled by remember { mutableStateOf(false) }
     var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
+    var lastInvalidScanTime by remember { mutableStateOf(0L) }
+    var lastInvalidScannedContent by remember { mutableStateOf("") }
+
+    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    val barcodeScanner = remember {
+        val options = BarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .build()
+        BarcodeScanning.getClient(options)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            cameraExecutor.shutdown()
+            barcodeScanner.close()
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -91,8 +108,14 @@ fun ScanScreen(navController: NavController) {
                 launchSingleTop = true
             }
         } else {
-            val msg = context.getString(R.string.scan_invalid_url, url ?: "")
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            val now = System.currentTimeMillis()
+            val content = url ?: ""
+            if (now - lastInvalidScanTime > 2500L || content != lastInvalidScannedContent) {
+                lastInvalidScanTime = now
+                lastInvalidScannedContent = content
+                val msg = context.getString(R.string.scan_invalid_url, content)
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -100,8 +123,7 @@ fun ScanScreen(navController: NavController) {
         if (uri != null) {
             try {
                 val image = InputImage.fromFilePath(context, uri)
-                val scanner = BarcodeScanning.getClient()
-                scanner.process(image)
+                barcodeScanner.process(image)
                     .addOnSuccessListener { barcodes ->
                         val url = barcodes.firstOrNull()?.rawValue
                         handleBarcodeResult(url)
@@ -157,9 +179,8 @@ fun ScanScreen(navController: NavController) {
                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                 .build()
 
-                            val executor = Executors.newSingleThreadExecutor()
-                            imageAnalysis.setAnalyzer(executor) { imageProxy ->
-                                processImageProxy(imageProxy) { barcodeValue ->
+                            imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                processImageProxy(barcodeScanner, imageProxy) { barcodeValue ->
                                     previewView.post {
                                         handleBarcodeResult(barcodeValue)
                                     }
@@ -206,7 +227,7 @@ fun ScanScreen(navController: NavController) {
                     },
                     modifier = Modifier.fillMaxWidth(0.7f)
                 ) {
-                    Text(if (torchEnabled) stringResource(R.string.scan_flashlight) + ": ON" else stringResource(R.string.scan_flashlight) + ": OFF")
+                    Text(stringResource(if (torchEnabled) R.string.scan_flashlight_on else R.string.scan_flashlight_off))
                 }
 
                 OutlinedButton(
@@ -234,20 +255,18 @@ fun ScanScreen(navController: NavController) {
 }
 
 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-private fun processImageProxy(imageProxy: ImageProxy, onBarcodeDetected: (String) -> Unit) {
+private fun processImageProxy(
+    scanner: com.google.mlkit.vision.barcode.BarcodeScanner,
+    imageProxy: ImageProxy,
+    onBarcodeDetected: (String) -> Unit
+) {
     val mediaImage = imageProxy.image
     if (mediaImage != null) {
         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        val options = BarcodeScannerOptions.Builder()
-            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-            .build()
-        val scanner = BarcodeScanning.getClient(options)
-
         scanner.process(image)
             .addOnSuccessListener { barcodes ->
                 for (barcode in barcodes) {
                     barcode.rawValue?.let {
-                        // Debounce logic should go here to prevent multiple launches.
                         onBarcodeDetected(it)
                     }
                 }

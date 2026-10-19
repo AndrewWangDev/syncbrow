@@ -63,6 +63,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import com.syncbrow.tool.util.CryptoManager
+import kotlinx.coroutines.flow.map
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Refresh
@@ -83,6 +85,15 @@ private object BrowserSettingsHolder {
     
     @Volatile
     var trackerBlockEnabled: Boolean = false
+
+    @Volatile
+    var forceEnableCopyPaste: Boolean = false
+
+    @Volatile
+    var removeRedirectPromptEnabled: Boolean = false
+
+    @Volatile
+    var incognitoEnabled: Boolean = false
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -153,7 +164,9 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
 
     val passwordDao = remember(db) { db.passwordDao() }
     val sitePasswords by remember(passwordDao, currentHost) {
-        passwordDao.getPasswordsBySite(currentHost)
+        passwordDao.getPasswordsBySite(currentHost).map { list ->
+            list.map { it.copy(password = CryptoManager.decrypt(it.password)) }
+        }
     }.collectAsState(initial = emptyList())
     
     // Stable WebView instance that persists across recompositions
@@ -176,10 +189,14 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             // Modern UA
             settings.userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36"
             settings.safeBrowsingEnabled = safeBrowsingEnabled
-            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
             
-            CookieManager.getInstance().setAcceptCookie(true)
-            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+            val acceptCookies = !incognitoEnabled
+            CookieManager.getInstance().setAcceptCookie(acceptCookies)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, acceptCookies)
+            if (incognitoEnabled) {
+                settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+            }
         }
     }
 
@@ -214,10 +231,23 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
     var progress by remember { mutableFloatStateOf(0f) }
     val focusManager = LocalFocusManager.current
 
-    LaunchedEffect(dohEnabled, adBlockEnabled, trackerBlockEnabled) {
+    LaunchedEffect(dohEnabled, adBlockEnabled, trackerBlockEnabled, forceEnableCopyPaste, removeRedirectPromptEnabled, incognitoEnabled) {
         BrowserSettingsHolder.dohEnabled = dohEnabled
         BrowserSettingsHolder.adBlockEnabled = adBlockEnabled
         BrowserSettingsHolder.trackerBlockEnabled = trackerBlockEnabled
+        BrowserSettingsHolder.forceEnableCopyPaste = forceEnableCopyPaste
+        BrowserSettingsHolder.removeRedirectPromptEnabled = removeRedirectPromptEnabled
+        BrowserSettingsHolder.incognitoEnabled = incognitoEnabled
+        
+        val acceptCookies = !incognitoEnabled
+        CookieManager.getInstance().setAcceptCookie(acceptCookies)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, acceptCookies)
+        if (incognitoEnabled) {
+            webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+            webView.clearCache(true)
+        } else {
+            webView.settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+        }
         
         if (dohEnabled) {
             try {
@@ -384,16 +414,6 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                     
                     // Cleanup from any previous parent if necessary
                     (webView.parent as? android.view.ViewGroup)?.removeView(webView)
-                    
-                    if (quicEnabled) {
-                        try {
-                            val clClass = Class.forName("org.chromium.base.CommandLine")
-                            val getInstance = clClass.getMethod("getInstance")
-                            val commandLine = getInstance.invoke(null)
-                            val appendSwitch = clClass.getMethod("appendSwitch", String::class.java)
-                            appendSwitch.invoke(commandLine, "enable-quic")
-                        } catch (_: Exception) {}
-                    }
 
                     swipeRefreshLayout.addView(webView)
                     swipeRefreshLayout.setOnRefreshListener {
@@ -523,7 +543,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                             swipeRefreshLayout.isRefreshing = false
                             
                             // Inject addons
-                            if (forceEnableCopyPaste) {
+                            if (BrowserSettingsHolder.forceEnableCopyPaste) {
                                 try {
                                     val inputStream = context.assets.open("addon.user.js")
                                     val jsText = inputStream.bufferedReader().use { it.readText() }
@@ -533,7 +553,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                                 }
                             }
 
-                            if (removeRedirectPromptEnabled) {
+                            if (BrowserSettingsHolder.removeRedirectPromptEnabled) {
                                 try {
                                     val inputStream = context.assets.open("remove.user.js")
                                     val jsText = inputStream.bufferedReader().use { it.readText() }
@@ -546,7 +566,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                             // Save History
                             url?.let {
                                 val title = view?.title ?: it
-                                if (!incognitoEnabled) {
+                                if (!BrowserSettingsHolder.incognitoEnabled) {
                                     scope.launch(Dispatchers.IO) {
                                         db.historyDao().insertHistory(
                                             HistoryEntity(url = it, title = title, timestamp = System.currentTimeMillis())
@@ -583,26 +603,32 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                             val isDoHEnabled = BrowserSettingsHolder.dohEnabled
                             val httpClient = BrowserSettingsHolder.client
 
-                            if (!isDoHEnabled || httpClient == null || request.method.lowercase() != "get" || !request.isForMainFrame || !urlString.startsWith("http")) {
+                            if (!isDoHEnabled || httpClient == null || request.method.lowercase() != "get" || !urlString.startsWith("http")) {
                                 return super.shouldInterceptRequest(view, request)
                             }
 
                             try {
                                 val okRequestBuilder = Request.Builder().url(urlString)
                                 request.requestHeaders?.forEach { (key, value) ->
-                                    try { okRequestBuilder.addHeader(key, value) } catch (_: Exception) {}
+                                    if (!key.equals("Accept-Encoding", ignoreCase = true)) {
+                                        try { okRequestBuilder.addHeader(key, value) } catch (_: Exception) {}
+                                    }
                                 }
                                 CookieManager.getInstance().getCookie(urlString)?.let {
                                     okRequestBuilder.addHeader("Cookie", it)
                                 }
                                 
-                                val response = httpClient.newBuilder()
-                                    .followRedirects(false)
-                                    .followSslRedirects(false)
-                                    .build()
-                                    .newCall(okRequestBuilder.build()).execute()
+                                val callClient = if (request.isForMainFrame) {
+                                    httpClient.newBuilder()
+                                        .followRedirects(false)
+                                        .followSslRedirects(false)
+                                        .build()
+                                } else {
+                                    httpClient
+                                }
+                                val response = callClient.newCall(okRequestBuilder.build()).execute()
 
-                                if (response.isRedirect) {
+                                if (request.isForMainFrame && response.isRedirect) {
                                     val location = response.header("Location")
                                     if (!location.isNullOrEmpty()) {
                                         val absoluteUrl = response.request.url.resolve(location)?.toString() ?: location
@@ -803,9 +829,8 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val inputHash = SettingsRepository.sha256(browserPmInput)
                     when {
-                        inputHash == pmRealPasswordHash -> {
+                        SettingsRepository.verifyPassword(browserPmInput, pmRealPasswordHash) -> {
                             scope.launch(Dispatchers.IO) {
                                 settingsRepository.resetPmLockout()
                                 settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
@@ -814,7 +839,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                             showBrowserPmVerifyDialog = false
                             showBrowserPmPanel = true
                         }
-                        pmEmergencyPasswordHash.isNotEmpty() && inputHash == pmEmergencyPasswordHash -> {
+                        pmEmergencyPasswordHash.isNotEmpty() && SettingsRepository.verifyPassword(browserPmInput, pmEmergencyPasswordHash) -> {
                             scope.launch(Dispatchers.IO) {
                                 db.passwordDao().deleteAllPasswords()
                                 settingsRepository.resetPmLockout()
@@ -890,15 +915,21 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                                         }
                                         IconButton(onClick = {
                                             showThisPw = !showThisPw
-                                            if (showThisPw) {
-                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                clipboard.setPrimaryClip(ClipData.newPlainText("password", pw.password))
-                                                Toast.makeText(context, context.getString(R.string.pm_password_copied), Toast.LENGTH_SHORT).show()
-                                            }
                                         }) {
                                             Icon(
                                                 if (showThisPw) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                                 contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        IconButton(onClick = {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            clipboard.setPrimaryClip(ClipData.newPlainText("password", pw.password))
+                                            Toast.makeText(context, context.getString(R.string.pm_password_copied), Toast.LENGTH_SHORT).show()
+                                        }) {
+                                            Icon(
+                                                Icons.Default.ContentCopy,
+                                                contentDescription = stringResource(R.string.pm_password_copied),
                                                 tint = MaterialTheme.colorScheme.primary
                                             )
                                         }
@@ -1004,7 +1035,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = strengthResult.labelRes,
+                            text = stringResource(strengthResult.labelResId),
                             style = MaterialTheme.typography.bodySmall,
                             color = strengthResult.color
                         )
@@ -1017,15 +1048,15 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                         scope.launch(Dispatchers.IO) {
                             if (isEdit) {
                                 passwordDao.updatePassword(browserPmEditingPassword!!.copy(
-                                    siteName = browserPmInputSite,
-                                    username = browserPmInputUsername,
-                                    password = browserPmInputPassword
+                                    siteName = browserPmInputSite.trim(),
+                                    username = browserPmInputUsername.trim(),
+                                    password = CryptoManager.encrypt(browserPmInputPassword.trim())
                                 ))
                             } else {
                                 passwordDao.insertPassword(PasswordEntity(
-                                    siteName = browserPmInputSite,
-                                    username = browserPmInputUsername,
-                                    password = browserPmInputPassword
+                                    siteName = browserPmInputSite.trim(),
+                                    username = browserPmInputUsername.trim(),
+                                    password = CryptoManager.encrypt(browserPmInputPassword.trim())
                                 ))
                             }
                             withContext(Dispatchers.Main) {
