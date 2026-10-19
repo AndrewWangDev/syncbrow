@@ -38,19 +38,45 @@ class SettingsRepository(private val context: Context) {
 
         private const val PEPPER = "SyncBrow_Salt_Secured#2026"
 
-        fun hashPassword(input: String): String {
-            val salted = PEPPER + input
-            var digest = java.security.MessageDigest.getInstance("SHA-256").digest(salted.toByteArray(Charsets.UTF_8))
+        private fun computeHash(input: String, saltHex: String): String {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            var digest = md.digest((saltHex + input).toByteArray(Charsets.UTF_8))
             for (i in 1..10000) {
-                digest = java.security.MessageDigest.getInstance("SHA-256").digest(digest)
+                md.reset()
+                digest = md.digest(digest)
+            }
+            return digest.joinToString("") { "%02x".format(it) }
+        }
+
+        private fun computeLegacyPepperHash(input: String): String {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            var digest = md.digest((PEPPER + input).toByteArray(Charsets.UTF_8))
+            for (i in 1..10000) {
+                md.reset()
+                digest = md.digest(digest)
             }
             return "SALT:" + digest.joinToString("") { "%02x".format(it) }
+        }
+
+        fun hashPassword(input: String): String {
+            val saltBytes = ByteArray(16)
+            java.security.SecureRandom().nextBytes(saltBytes)
+            val saltHex = saltBytes.joinToString("") { "%02x".format(it) }
+            val hashHex = computeHash(input, saltHex)
+            return "SALT:$saltHex:$hashHex"
         }
 
         fun verifyPassword(input: String, storedHash: String): Boolean {
             if (storedHash.isEmpty()) return false
             return if (storedHash.startsWith("SALT:")) {
-                hashPassword(input) == storedHash
+                val parts = storedHash.removePrefix("SALT:").split(":")
+                if (parts.size == 2) {
+                    val saltHex = parts[0]
+                    val expectedHashHex = parts[1]
+                    computeHash(input, saltHex) == expectedHashHex
+                } else {
+                    computeLegacyPepperHash(input) == storedHash
+                }
             } else {
                 legacySha256(input) == storedHash
             }

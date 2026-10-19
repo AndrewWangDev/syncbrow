@@ -197,11 +197,13 @@ fun HistoryScreen(navController: NavController) {
                                         } else {
                                             val baseName = candidate.nameWithoutExtension
                                             val ext = candidate.extension
-                                            val matched = downloadsDir.listFiles()?.filter { f ->
-                                                f.name.startsWith(baseName) && (ext.isEmpty() || f.name.endsWith(ext))
-                                            }?.maxByOrNull { it.lastModified() }
-                                            if (matched != null && matched.exists()) {
-                                                file = matched
+                                            if (baseName.isNotBlank()) {
+                                                val matched = downloadsDir.listFiles()?.filter { f ->
+                                                    f.name.startsWith(baseName) && (ext.isEmpty() || f.name.endsWith(ext))
+                                                }?.maxByOrNull { it.lastModified() }
+                                                if (matched != null && matched.exists()) {
+                                                    file = matched
+                                                }
                                             }
                                         }
                                     }

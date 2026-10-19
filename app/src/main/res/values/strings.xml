@@ -164,4 +164,6 @@
     <string name="password_strength_very_strong">Very Strong</string>
     <string name="scan_flashlight_on">Flashlight: ON</string>
     <string name="scan_flashlight_off">Flashlight: OFF</string>
+    <string name="pm_password_decrypt_failed">Decryption failed, cannot overwrite</string>
+    <string name="pm_password_encrypt_failed">Failed to encrypt password. Storage aborted.</string>
 </resources>

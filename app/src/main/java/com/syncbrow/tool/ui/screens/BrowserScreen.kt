@@ -51,6 +51,8 @@ import com.syncbrow.tool.R
 import com.syncbrow.tool.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.dnsoverhttps.DnsOverHttps
@@ -165,7 +167,15 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
     val passwordDao = remember(db) { db.passwordDao() }
     val sitePasswords by remember(passwordDao, currentHost) {
         passwordDao.getPasswordsBySite(currentHost).map { list ->
-            list.map { it.copy(password = CryptoManager.decrypt(it.password)) }
+            list.map { entity ->
+                val plain = try {
+                    CryptoManager.decrypt(entity.password)
+                } catch (e: Exception) {
+                    Log.e("BrowserScreen", "Failed to decrypt password id=${entity.id}", e)
+                    "******"
+                }
+                entity.copy(password = plain)
+            }
         }
     }.collectAsState(initial = emptyList())
     
@@ -191,9 +201,8 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             settings.safeBrowsingEnabled = safeBrowsingEnabled
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
             
-            val acceptCookies = !incognitoEnabled
-            CookieManager.getInstance().setAcceptCookie(acceptCookies)
-            CookieManager.getInstance().setAcceptThirdPartyCookies(this, acceptCookies)
+            CookieManager.getInstance().setAcceptCookie(true)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, !incognitoEnabled)
             if (incognitoEnabled) {
                 settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
             }
@@ -239,12 +248,10 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
         BrowserSettingsHolder.removeRedirectPromptEnabled = removeRedirectPromptEnabled
         BrowserSettingsHolder.incognitoEnabled = incognitoEnabled
         
-        val acceptCookies = !incognitoEnabled
-        CookieManager.getInstance().setAcceptCookie(acceptCookies)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, acceptCookies)
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !incognitoEnabled)
         if (incognitoEnabled) {
             webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
-            webView.clearCache(true)
         } else {
             webView.settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
         }
@@ -262,7 +269,14 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                     )
                     .bootstrapDnsHosts(InetAddress.getByName("146.112.41.2"))
                     .build()
+                val dispatcher = Dispatcher().apply {
+                    maxRequests = 128
+                    maxRequestsPerHost = 32
+                }
+                val pool = ConnectionPool(32, 5, TimeUnit.MINUTES)
                 BrowserSettingsHolder.client = OkHttpClient.Builder()
+                    .dispatcher(dispatcher)
+                    .connectionPool(pool)
                     .dns(dns)
                     .connectTimeout(10, TimeUnit.SECONDS)
                     .readTimeout(10, TimeUnit.SECONDS)
@@ -1045,23 +1059,35 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             confirmButton = {
                 TextButton(onClick = {
                     if (browserPmInputSite.isNotBlank() && browserPmInputUsername.isNotBlank() && browserPmInputPassword.isNotBlank()) {
+                        if (browserPmInputPassword == "******") {
+                            Toast.makeText(context, context.getString(R.string.pm_password_decrypt_failed), Toast.LENGTH_SHORT).show()
+                            return@TextButton
+                        }
                         scope.launch(Dispatchers.IO) {
-                            if (isEdit) {
-                                passwordDao.updatePassword(browserPmEditingPassword!!.copy(
-                                    siteName = browserPmInputSite.trim(),
-                                    username = browserPmInputUsername.trim(),
-                                    password = CryptoManager.encrypt(browserPmInputPassword.trim())
-                                ))
-                            } else {
-                                passwordDao.insertPassword(PasswordEntity(
-                                    siteName = browserPmInputSite.trim(),
-                                    username = browserPmInputUsername.trim(),
-                                    password = CryptoManager.encrypt(browserPmInputPassword.trim())
-                                ))
-                            }
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
-                                showBrowserPmAddEdit = false
+                            try {
+                                val encrypted = CryptoManager.encrypt(browserPmInputPassword.trim())
+                                if (isEdit) {
+                                    passwordDao.updatePassword(browserPmEditingPassword!!.copy(
+                                        siteName = browserPmInputSite.trim(),
+                                        username = browserPmInputUsername.trim(),
+                                        password = encrypted
+                                    ))
+                                } else {
+                                    passwordDao.insertPassword(PasswordEntity(
+                                        siteName = browserPmInputSite.trim(),
+                                        username = browserPmInputUsername.trim(),
+                                        password = encrypted
+                                    ))
+                                }
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
+                                    showBrowserPmAddEdit = false
+                                }
+                            } catch (e: Exception) {
+                                Log.e("BrowserScreen", "Failed to encrypt password", e)
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, context.getString(R.string.pm_password_encrypt_failed), Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                     }

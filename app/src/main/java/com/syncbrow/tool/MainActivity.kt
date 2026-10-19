@@ -80,15 +80,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onStop() {
-        super.onStop()
-        if (isIncognito) {
-            CookieManager.getInstance().removeAllCookies(null)
-            CookieManager.getInstance().flush()
-            WebStorage.getInstance().deleteAllData()
-        }
-    }
-
     override fun onDestroy() {
         if (isIncognito) {
             // "Exit before clear cookies"
