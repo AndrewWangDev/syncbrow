@@ -3,19 +3,23 @@ package com.syncbrow.tool.util
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+class CryptoException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
 object CryptoManager {
+    private const val TAG = "CryptoManager"
     private const val KEY_ALIAS = "syncbrow_pm_aes_key"
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val GCM_IV_LENGTH = 12
     private const val GCM_TAG_LENGTH = 128
-    private const val PREFIX = "ENC:"
+    const val PREFIX = "ENC:"
 
     private val keyStore: KeyStore by lazy {
         KeyStore.getInstance(ANDROID_KEYSTORE).apply {
@@ -45,6 +49,9 @@ object CryptoManager {
         return entry.secretKey
     }
 
+    fun isEncrypted(text: String): Boolean = text.startsWith(PREFIX)
+
+    @Throws(CryptoException::class)
     fun encrypt(plaintext: String): String {
         if (plaintext.isEmpty()) return ""
         try {
@@ -57,11 +64,12 @@ object CryptoManager {
             System.arraycopy(cipherBytes, 0, combined, iv.size, cipherBytes.size)
             return PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
         } catch (e: Exception) {
-            // Fallback in case KeyStore is temporarily inaccessible
-            return plaintext
+            Log.e(TAG, "Encryption failed", e)
+            throw CryptoException("Failed to encrypt data", e)
         }
     }
 
+    @Throws(CryptoException::class)
     fun decrypt(encryptedText: String): String {
         if (!encryptedText.startsWith(PREFIX)) {
             // Unencrypted legacy fallback
@@ -69,7 +77,9 @@ object CryptoManager {
         }
         try {
             val raw = Base64.decode(encryptedText.removePrefix(PREFIX), Base64.NO_WRAP)
-            if (raw.size <= GCM_IV_LENGTH) return encryptedText
+            if (raw.size <= GCM_IV_LENGTH) {
+                throw CryptoException("Encrypted payload too short")
+            }
             val iv = ByteArray(GCM_IV_LENGTH)
             System.arraycopy(raw, 0, iv, 0, GCM_IV_LENGTH)
             val cipherBytes = ByteArray(raw.size - GCM_IV_LENGTH)
@@ -81,7 +91,8 @@ object CryptoManager {
             val plainBytes = cipher.doFinal(cipherBytes)
             return String(plainBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            return encryptedText
+            Log.e(TAG, "Decryption failed", e)
+            throw CryptoException("Failed to decrypt data", e)
         }
     }
 }

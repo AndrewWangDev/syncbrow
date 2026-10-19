@@ -50,7 +50,15 @@ fun PasswordManagerScreen(navController: NavController) {
     val passwordDao = remember(db) { db.passwordDao() }
     val passwordFlow = remember(passwordDao) {
         passwordDao.getAllPasswords().map { list ->
-            list.map { it.copy(password = CryptoManager.decrypt(it.password)) }
+            list.map { entity ->
+                val plain = try {
+                    CryptoManager.decrypt(entity.password)
+                } catch (e: Exception) {
+                    android.util.Log.e("PasswordManager", "Failed to decrypt password id=${entity.id}", e)
+                    "******"
+                }
+                entity.copy(password = plain)
+            }
         }
     }
     
@@ -485,26 +493,38 @@ fun PasswordManagerScreen(navController: NavController) {
             confirmButton = {
                 TextButton(onClick = {
                     if (inputSite.isBlank() || inputUsername.isBlank() || inputPassword.isBlank()) return@TextButton
+                    if (inputPassword == "******") {
+                        Toast.makeText(context, context.getString(R.string.pm_password_decrypt_failed), Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
                     scope.launch(Dispatchers.IO) {
-                        if (isEdit) {
-                            db.passwordDao().updatePassword(
-                                editingPassword!!.copy(
-                                    siteName = inputSite.trim(),
-                                    username = inputUsername.trim(),
-                                    password = CryptoManager.encrypt(inputPassword.trim())
+                        try {
+                            val encryptedPassword = CryptoManager.encrypt(inputPassword.trim())
+                            if (isEdit) {
+                                db.passwordDao().updatePassword(
+                                    editingPassword!!.copy(
+                                        siteName = inputSite.trim(),
+                                        username = inputUsername.trim(),
+                                        password = encryptedPassword
+                                    )
                                 )
-                            )
-                        } else {
-                            db.passwordDao().insertPassword(
-                                PasswordEntity(
-                                    siteName = inputSite.trim(),
-                                    username = inputUsername.trim(),
-                                    password = CryptoManager.encrypt(inputPassword.trim())
+                            } else {
+                                db.passwordDao().insertPassword(
+                                    PasswordEntity(
+                                        siteName = inputSite.trim(),
+                                        username = inputUsername.trim(),
+                                        password = encryptedPassword
+                                    )
                                 )
-                            )
-                        }
-                        launch(Dispatchers.Main) {
-                            Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
+                            }
+                            launch(Dispatchers.Main) {
+                                Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("PasswordManager", "Failed to encrypt password", e)
+                            launch(Dispatchers.Main) {
+                                Toast.makeText(context, context.getString(R.string.pm_password_encrypt_failed), Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                     showAddEditDialog = false

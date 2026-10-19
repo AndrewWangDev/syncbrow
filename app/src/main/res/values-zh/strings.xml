@@ -164,4 +164,6 @@
     <string name="password_strength_very_strong">极强</string>
     <string name="scan_flashlight_on">手电筒：开</string>
     <string name="scan_flashlight_off">手电筒：关</string>
+    <string name="pm_password_decrypt_failed">密码解密失败，禁止覆盖</string>
+    <string name="pm_password_encrypt_failed">密码加密失败，已中止保存</string>
 </resources>
