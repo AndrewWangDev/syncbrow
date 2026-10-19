@@ -188,36 +188,63 @@ fun HistoryScreen(navController: NavController) {
                                 supportingContent = { Text(download.localPath ?: download.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 modifier = Modifier.clickable {
                                     val path = download.localPath
-                                    if (path != null) {
-                                        val file = java.io.File(path)
-                                        if (file.exists()) {
-                                            try {
-                                                val uri = androidx.core.content.FileProvider.getUriForFile(
-                                                    context,
-                                                    "${context.packageName}.fileprovider",
-                                                    file
-                                                )
-                                                val intent = Intent(Intent.ACTION_VIEW)
-                                                val extension = file.extension.lowercase()
-                                                val mimeType = if (extension == "apk") {
-                                                    "application/vnd.android.package-archive"
-                                                } else {
-                                                    context.contentResolver.getType(uri) ?: "*/*"
-                                                }
-                                                
-                                                intent.setDataAndType(uri, mimeType)
-                                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                
-                                                // If it's an APK, try to launch installer directly
-                                                // For other unknown types, use a chooser to avoid browser takeover
-                                                val chooserTitle = if (extension == "apk") "Install APK" else "Open File"
-                                                context.startActivity(Intent.createChooser(intent, chooserTitle))
-                                            } catch (e: Exception) {
-                                                android.widget.Toast.makeText(context, R.string.download_file_error, android.widget.Toast.LENGTH_SHORT).show()
-                                            }
+                                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                    var file: java.io.File? = if (path != null) java.io.File(path) else null
+                                    if (file == null || !file.exists()) {
+                                        val candidate = java.io.File(downloadsDir, download.filename)
+                                        if (candidate.exists()) {
+                                            file = candidate
                                         } else {
-                                            android.widget.Toast.makeText(context, R.string.download_file_missing, android.widget.Toast.LENGTH_SHORT).show()
+                                            val baseName = candidate.nameWithoutExtension
+                                            val ext = candidate.extension
+                                            val matched = downloadsDir.listFiles()?.filter { f ->
+                                                f.name.startsWith(baseName) && (ext.isEmpty() || f.name.endsWith(ext))
+                                            }?.maxByOrNull { it.lastModified() }
+                                            if (matched != null && matched.exists()) {
+                                                file = matched
+                                            }
+                                        }
+                                    }
+
+                                    if (file != null && file.exists()) {
+                                        try {
+                                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                                context,
+                                                "${context.packageName}.fileprovider",
+                                                file
+                                            )
+                                            val extension = file.extension.lowercase()
+                                            if (extension == "apk" && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                if (!context.packageManager.canRequestPackageInstalls()) {
+                                                    val settingsIntent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                                        data = Uri.parse("package:${context.packageName}")
+                                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    }
+                                                    context.startActivity(settingsIntent)
+                                                    android.widget.Toast.makeText(context, context.getString(R.string.download_permission_install_hint), android.widget.Toast.LENGTH_LONG).show()
+                                                    return@clickable
+                                                }
+                                            }
+
+                                            val intent = Intent(Intent.ACTION_VIEW)
+                                            val mimeType = if (extension == "apk") {
+                                                "application/vnd.android.package-archive"
+                                            } else {
+                                                context.contentResolver.getType(uri) ?: "*/*"
+                                            }
+                                            
+                                            intent.setDataAndType(uri, mimeType)
+                                            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            
+                                            val chooserTitle = if (extension == "apk") {
+                                                context.getString(R.string.download_install_apk)
+                                            } else {
+                                                context.getString(R.string.download_open_file)
+                                            }
+                                            context.startActivity(Intent.createChooser(intent, chooserTitle))
+                                        } catch (e: Exception) {
+                                            android.widget.Toast.makeText(context, R.string.download_file_error, android.widget.Toast.LENGTH_SHORT).show()
                                         }
                                     } else {
                                         // Legacy record or no path, try URL
@@ -236,7 +263,7 @@ fun HistoryScreen(navController: NavController) {
                                                 val intent = Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS)
                                                 context.startActivity(intent)
                                             } catch (e: Exception) {
-                                                android.widget.Toast.makeText(context, "Cannot open downloads folder", android.widget.Toast.LENGTH_SHORT).show()
+                                                android.widget.Toast.makeText(context, context.getString(R.string.download_cannot_open_folder), android.widget.Toast.LENGTH_SHORT).show()
                                             }
                                         }) {
                                             Icon(Icons.Default.Menu, contentDescription = "Show in Folder")

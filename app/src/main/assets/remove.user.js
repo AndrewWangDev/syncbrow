@@ -19,14 +19,16 @@
 (function () {
     'use strict';
 
+    const win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+
     // 保存并重写原始 open 方法
-    unsafeWindow.__otld_open = unsafeWindow.open;
+    win.__otld_open = win.open;
     var myopen = function (url, name, features) {
-        return unsafeWindow.__otld_open(url, name, features);
+        return win.__otld_open(url, name, features);
     }
     var _myopen = myopen.bind(null);
-    _myopen.toString = unsafeWindow.__otld_open.toString;
-    Object.defineProperty(unsafeWindow, 'open', {
+    _myopen.toString = win.__otld_open.toString;
+    Object.defineProperty(win, 'open', {
         value: _myopen
     });
 

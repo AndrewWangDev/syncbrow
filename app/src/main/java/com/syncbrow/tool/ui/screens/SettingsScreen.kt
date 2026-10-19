@@ -402,9 +402,8 @@ fun SettingsScreen(navController: NavController) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val inputHash = SettingsRepository.sha256(pmInputPassword)
                     when {
-                        inputHash == pmRealPasswordHash -> {
+                        SettingsRepository.verifyPassword(pmInputPassword, pmRealPasswordHash) -> {
                             // Correct real password
                             scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                                 settingsRepository.resetPmLockout()
@@ -414,7 +413,7 @@ fun SettingsScreen(navController: NavController) {
                             showPmPasswordDialog = false
                             navController.navigate("password_manager")
                         }
-                        pmEmergencyPasswordHash.isNotEmpty() && inputHash == pmEmergencyPasswordHash -> {
+                        pmEmergencyPasswordHash.isNotEmpty() && SettingsRepository.verifyPassword(pmInputPassword, pmEmergencyPasswordHash) -> {
                             // Emergency password: wipe all passwords silently, navigate normally
                             scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                                 val pmDb = AppDatabase.getDatabase(context)
@@ -488,30 +487,42 @@ fun NetworkDiagnosisDialog(onDismiss: () -> Unit) {
             val isOnline = capabilities != null && (
                     capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                     capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             )
             
             statusOnline = if (isOnline) 1 else 2
 
-            // 2. DNS Check (dns.google)
+            // 2. DNS Check (dns.google with fallback to alidns.com)
             try {
-                val addresses = InetAddress.getAllByName("dns.google")
+                val addresses = try {
+                    InetAddress.getAllByName("dns.google")
+                } catch (_: Exception) {
+                    InetAddress.getAllByName("alidns.com")
+                }
                 statusDns = if (addresses.isNotEmpty()) 1 else 2
             } catch (_: Exception) {
                 statusDns = 2
             }
 
-            // 3. IP Connectivity (Apple - 17.253.144.10)
-            try {
-                val socket = Socket()
-                socket.connect(InetSocketAddress("17.253.144.10", 443), 4000)
-                socket.close()
-                statusIpConn = 1
-                statusPortConn = 1 // Socket check covers port connectivity
-            } catch (_: Exception) {
-                statusIpConn = 2
-                statusPortConn = 2
+            // 3. IP Connectivity (Multi-endpoint fallback: Cloudflare, Google, AliDNS)
+            val testEndpoints = listOf(
+                "1.1.1.1" to 53,
+                "8.8.8.8" to 53,
+                "223.5.5.5" to 53
+            )
+            var ipSuccess = false
+            for ((ip, port) in testEndpoints) {
+                try {
+                    val socket = Socket()
+                    socket.connect(InetSocketAddress(ip, port), 2500)
+                    socket.close()
+                    ipSuccess = true
+                    break
+                } catch (_: Exception) {}
             }
+            statusIpConn = if (ipSuccess) 1 else 2
+            statusPortConn = if (ipSuccess) 1 else 2
 
             // 5. GFW Status (google.com)
             try {

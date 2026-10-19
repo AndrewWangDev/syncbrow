@@ -153,4 +153,15 @@
     <string name="net_diag_conclusion_offline">Not connected</string>
     <string name="net_diag_conclusion_gfw">Partial access, GFW detected</string>
     <string name="net_diag_conclusion_problem">Network problem exists</string>
+    <string name="download_install_apk">Install APK</string>
+    <string name="download_open_file">Open File</string>
+    <string name="download_permission_install_hint">Please allow installation of unknown apps</string>
+    <string name="download_cannot_open_folder">Cannot open downloads folder</string>
+    <string name="password_strength_none">---</string>
+    <string name="password_strength_weak">Weak</string>
+    <string name="password_strength_normal">Moderate</string>
+    <string name="password_strength_strong">Strong</string>
+    <string name="password_strength_very_strong">Very Strong</string>
+    <string name="scan_flashlight_on">Flashlight: ON</string>
+    <string name="scan_flashlight_off">Flashlight: OFF</string>
 </resources>

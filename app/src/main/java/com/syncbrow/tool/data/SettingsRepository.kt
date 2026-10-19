@@ -36,9 +36,33 @@ class SettingsRepository(private val context: Context) {
         val PM_LOCKOUT_TIMESTAMP_KEY = longPreferencesKey("pm_lockout_timestamp")
         val PM_LAST_AUTH_TIMESTAMP_KEY = longPreferencesKey("pm_last_auth_timestamp")
 
-        fun sha256(input: String): String {
-            val bytes = java.security.MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+        private const val PEPPER = "SyncBrow_Salt_Secured#2026"
+
+        fun hashPassword(input: String): String {
+            val salted = PEPPER + input
+            var digest = java.security.MessageDigest.getInstance("SHA-256").digest(salted.toByteArray(Charsets.UTF_8))
+            for (i in 1..10000) {
+                digest = java.security.MessageDigest.getInstance("SHA-256").digest(digest)
+            }
+            return "SALT:" + digest.joinToString("") { "%02x".format(it) }
+        }
+
+        fun verifyPassword(input: String, storedHash: String): Boolean {
+            if (storedHash.isEmpty()) return false
+            return if (storedHash.startsWith("SALT:")) {
+                hashPassword(input) == storedHash
+            } else {
+                legacySha256(input) == storedHash
+            }
+        }
+
+        private fun legacySha256(input: String): String {
+            val bytes = java.security.MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
             return bytes.joinToString("") { "%02x".format(it) }
+        }
+
+        fun sha256(input: String): String {
+            return hashPassword(input)
         }
     }
 

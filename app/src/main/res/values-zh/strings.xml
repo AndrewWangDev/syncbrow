@@ -153,4 +153,15 @@
     <string name="net_diag_conclusion_offline">未联网</string>
     <string name="net_diag_conclusion_gfw">能访问部分网络，但存在 GFW 墙</string>
     <string name="net_diag_conclusion_problem">网络存在问题</string>
+    <string name="download_install_apk">安装应用</string>
+    <string name="download_open_file">打开文件</string>
+    <string name="download_permission_install_hint">请在设置中允许安装未知来源应用</string>
+    <string name="download_cannot_open_folder">无法打开下载文件夹</string>
+    <string name="password_strength_none">---</string>
+    <string name="password_strength_weak">弱</string>
+    <string name="password_strength_normal">一般</string>
+    <string name="password_strength_strong">强</string>
+    <string name="password_strength_very_strong">极强</string>
+    <string name="scan_flashlight_on">手电筒：开</string>
+    <string name="scan_flashlight_off">手电筒：关</string>
 </resources>

@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <include domain="sharedpref" path="."/>
-    <include domain="database" path="."/>
     <include domain="file" path="."/>
+    <!-- Exclude sensitive database containing credentials from backup extraction -->
+    <exclude domain="database" path="scanner_database"/>
+    <exclude domain="database" path="scanner_database-wal"/>
+    <exclude domain="database" path="scanner_database-shm"/>
 </full-backup-content>

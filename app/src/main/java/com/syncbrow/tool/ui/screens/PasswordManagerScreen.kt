@@ -35,6 +35,9 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.syncbrow.tool.util.CryptoManager
+import kotlinx.coroutines.flow.map
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,12 +48,118 @@ fun PasswordManagerScreen(navController: NavController) {
     val settingsRepository = remember { SettingsRepository(context) }
 
     val passwordDao = remember(db) { db.passwordDao() }
-    val passwordFlow = remember(passwordDao) { passwordDao.getAllPasswords() }
+    val passwordFlow = remember(passwordDao) {
+        passwordDao.getAllPasswords().map { list ->
+            list.map { it.copy(password = CryptoManager.decrypt(it.password)) }
+        }
+    }
     
     val passwordList by passwordFlow.collectAsState(initial = emptyList())
     val encryptionEnabled by settingsRepository.pmEncryptionEnabledFlow.collectAsState(initial = false)
     val realPasswordHash by settingsRepository.pmRealPasswordHashFlow.collectAsState(initial = "")
     val emergencyPasswordHash by settingsRepository.pmEmergencyPasswordHashFlow.collectAsState(initial = "")
+    val pmFailedAttempts by settingsRepository.pmFailedAttemptsFlow.collectAsState(initial = 0)
+    val pmLockoutTimestamp by settingsRepository.pmLockoutTimestampFlow.collectAsState(initial = 0L)
+    val pmLastAuthTimestamp by settingsRepository.pmLastAuthTimestampFlow.collectAsState(initial = 0L)
+
+    var isSessionAuthed by rememberSaveable { mutableStateOf(false) }
+    var authInputPassword by remember { mutableStateOf("") }
+    var showAuthPwText by remember { mutableStateOf(false) }
+
+    val now = System.currentTimeMillis()
+    val isSessionValid = (now - pmLastAuthTimestamp) < 30 * 60 * 1000L
+    val isLockedOut = pmLockoutTimestamp > 0 && (now - pmLockoutTimestamp) < 3600_000L
+    val needsAuth = encryptionEnabled && realPasswordHash.isNotEmpty() && !isSessionValid && !isSessionAuthed
+
+    if (needsAuth) {
+        if (isLockedOut) {
+            AlertDialog(
+                onDismissRequest = { navController.popBackStack() },
+                title = { Text(stringResource(R.string.pm_locked_out)) },
+                text = { Text(stringResource(R.string.pm_locked_out)) },
+                confirmButton = {
+                    TextButton(onClick = { navController.popBackStack() }) {
+                        Text(stringResource(R.string.pm_cancel))
+                    }
+                }
+            )
+        } else {
+            AlertDialog(
+                onDismissRequest = { navController.popBackStack() },
+                title = { Text(stringResource(R.string.pm_enter_password)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = authInputPassword,
+                            onValueChange = { authInputPassword = it },
+                            label = { Text(stringResource(R.string.pm_password)) },
+                            singleLine = true,
+                            visualTransformation = if (showAuthPwText) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { showAuthPwText = !showAuthPwText }) {
+                                    Icon(
+                                        if (showAuthPwText) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = null
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        when {
+                            SettingsRepository.verifyPassword(authInputPassword, realPasswordHash) -> {
+                                scope.launch(Dispatchers.IO) {
+                                    settingsRepository.resetPmLockout()
+                                    settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                                }
+                                isSessionAuthed = true
+                                Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
+                            }
+                            emergencyPasswordHash.isNotEmpty() && SettingsRepository.verifyPassword(authInputPassword, emergencyPasswordHash) -> {
+                                scope.launch(Dispatchers.IO) {
+                                    db.passwordDao().deleteAllPasswords()
+                                    settingsRepository.resetPmLockout()
+                                    settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                                }
+                                isSessionAuthed = true
+                                Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
+                            }
+                            else -> {
+                                val newAttempts = pmFailedAttempts + 1
+                                scope.launch(Dispatchers.IO) {
+                                    if (newAttempts >= 10) {
+                                        settingsRepository.setPmFailedAttempts(newAttempts)
+                                        settingsRepository.setPmLockoutTimestamp(System.currentTimeMillis())
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
+                                            navController.popBackStack()
+                                        }
+                                    } else {
+                                        settingsRepository.setPmFailedAttempts(newAttempts)
+                                        withContext(Dispatchers.Main) {
+                                            val remaining = 10 - newAttempts
+                                            Toast.makeText(context, context.getString(R.string.pm_password_wrong, remaining), Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }) {
+                        Text(stringResource(R.string.bookmark_save))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { navController.popBackStack() }) {
+                        Text(stringResource(R.string.pm_cancel))
+                    }
+                }
+            )
+        }
+        return
+    }
 
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showAddEditDialog by remember { mutableStateOf(false) }
@@ -219,18 +328,25 @@ fun PasswordManagerScreen(navController: NavController) {
                         readOnly = true,
                         visualTransformation = if (showPwText) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
-                            IconButton(onClick = { 
-                                showPwText = !showPwText 
-                                if (showPwText) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     clipboard.setPrimaryClip(ClipData.newPlainText("password", pw.password))
                                     Toast.makeText(context, context.getString(R.string.pm_password_copied), Toast.LENGTH_SHORT).show()
+                                }) {
+                                    Icon(
+                                        Icons.Default.ContentCopy,
+                                        contentDescription = stringResource(R.string.pm_password_copied)
+                                    )
                                 }
-                            }) {
-                                Icon(
-                                    if (showPwText) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                    contentDescription = null
-                                )
+                                IconButton(onClick = { 
+                                    showPwText = !showPwText 
+                                }) {
+                                    Icon(
+                                        if (showPwText) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = null
+                                    )
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -359,7 +475,7 @@ fun PasswordManagerScreen(navController: NavController) {
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = strengthResult.labelRes,
+                            text = stringResource(strengthResult.labelResId),
                             style = MaterialTheme.typography.bodySmall,
                             color = strengthResult.color
                         )
@@ -375,7 +491,7 @@ fun PasswordManagerScreen(navController: NavController) {
                                 editingPassword!!.copy(
                                     siteName = inputSite.trim(),
                                     username = inputUsername.trim(),
-                                    password = inputPassword.trim()
+                                    password = CryptoManager.encrypt(inputPassword.trim())
                                 )
                             )
                         } else {
@@ -383,7 +499,7 @@ fun PasswordManagerScreen(navController: NavController) {
                                 PasswordEntity(
                                     siteName = inputSite.trim(),
                                     username = inputUsername.trim(),
-                                    password = inputPassword.trim()
+                                    password = CryptoManager.encrypt(inputPassword.trim())
                                 )
                             )
                         }
