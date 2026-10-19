@@ -12,8 +12,8 @@ android {
         applicationId = "com.syncbrow.tool"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.4.0-beta"
+        versionCode = 4
+        versionName = "v2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
