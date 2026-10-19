@@ -3,6 +3,7 @@
     <cloud-backup>
         <include domain="sharedpref" path="."/>
         <include domain="file" path="."/>
+        <include domain="database" path="."/>
         <!-- Exclude sensitive database containing credentials from cloud backup -->
         <exclude domain="database" path="scanner_database"/>
         <exclude domain="database" path="scanner_database-wal"/>
@@ -11,6 +12,7 @@
     <device-transfer>
         <include domain="sharedpref" path="."/>
         <include domain="file" path="."/>
+        <include domain="database" path="."/>
         <!-- Exclude sensitive database containing credentials from device transfer -->
         <exclude domain="database" path="scanner_database"/>
         <exclude domain="database" path="scanner_database-wal"/>
