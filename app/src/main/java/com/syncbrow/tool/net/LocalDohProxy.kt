@@ -14,6 +14,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -24,6 +25,7 @@ object LocalDohProxy {
     private val isRunning = AtomicBoolean(false)
     private val proxyScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val singleThreadExecutor = Executors.newSingleThreadExecutor()
+    private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
 
     @Volatile
     private var currentProvider: String = "opendns"
@@ -33,13 +35,20 @@ object LocalDohProxy {
 
     fun getActivePort(): Int = serverSocket?.localPort ?: -1
 
+    fun isSupported(): Boolean = WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)
+
     @Synchronized
-    fun start(context: Context, provider: String = "opendns") {
+    fun start(@Suppress("UNUSED_PARAMETER") context: Context, provider: String = "opendns") {
         currentProvider = provider
         setupDohClient(provider)
 
         if (isRunning.get() && serverSocket != null && !serverSocket!!.isClosed) {
             Log.d(TAG, "Proxy already running on port ${serverSocket!!.localPort}")
+            return
+        }
+
+        if (!isSupported()) {
+            Log.w(TAG, "PROXY_OVERRIDE is not supported on this device")
             return
         }
 
@@ -61,15 +70,12 @@ object LocalDohProxy {
                 }
             }
 
-            // Hook into WebView ProxyController
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-                val proxyConfig = ProxyConfig.Builder()
-                    .addProxyRule("127.0.0.1:$port")
-                    .addBypassRule("<-loopback>")
-                    .build()
-                ProxyController.getInstance().setProxyOverride(proxyConfig, singleThreadExecutor) {
-                    Log.i(TAG, "ProxyController override applied on port $port")
-                }
+            val proxyConfig = ProxyConfig.Builder()
+                .addProxyRule("127.0.0.1:$port")
+                .addBypassRule("<-loopback>")
+                .build()
+            ProxyController.getInstance().setProxyOverride(proxyConfig, singleThreadExecutor) {
+                Log.i(TAG, "ProxyController override applied on port $port")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start LocalDohProxy", e)
@@ -131,7 +137,9 @@ object LocalDohProxy {
     }
 
     private suspend fun handleClientSocket(client: Socket) = withContext(Dispatchers.IO) {
+        activeSockets.add(client)
         try {
+            client.soTimeout = 30_000
             val inStream = client.getInputStream()
             val outStream = client.getOutputStream()
 
@@ -162,48 +170,117 @@ object LocalDohProxy {
                 val targetAddresses = try {
                     resolveHost(host)
                 } catch (e: Exception) {
-                    outStream.write("HTTP/1.1 504 Gateway Timeout\r\n\r\n".toByteArray(Charsets.US_ASCII))
-                    outStream.flush()
+                    try {
+                        outStream.write("HTTP/1.1 504 Gateway Timeout\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                        outStream.flush()
+                    } catch (_: Exception) {}
                     client.close()
                     return@withContext
                 }
 
                 val targetSocket = Socket()
+                activeSockets.add(targetSocket)
                 try {
+                    targetSocket.soTimeout = 30_000
                     targetSocket.connect(InetSocketAddress(targetAddresses.first(), port), 10_000)
                     outStream.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(Charsets.US_ASCII))
                     outStream.flush()
                     pipeSockets(client, targetSocket)
                 } catch (e: Exception) {
-                    outStream.write("HTTP/1.1 502 Bad Gateway\r\n\r\n".toByteArray(Charsets.US_ASCII))
-                    outStream.flush()
+                    try {
+                        outStream.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                        outStream.flush()
+                    } catch (_: Exception) {}
                     client.close()
                     targetSocket.close()
+                    activeSockets.remove(targetSocket)
                 }
             } else {
                 // Regular HTTP GET/POST proxying
                 val parts = firstLine.split(" ")
                 if (parts.size >= 2) {
+                    val method = parts[0]
                     val uriStr = parts[1]
                     val uri = try { java.net.URI(uriStr) } catch (_: Exception) { null }
-                    val host = uri?.host ?: ""
-                    val port = if (uri?.port != null && uri.port != -1) uri.port else 80
-                    if (host.isNotEmpty()) {
-                        val targetAddresses = resolveHost(host)
+
+                    // Consume headers and extract Host header if needed
+                    val headers = mutableListOf<String>()
+                    var hostFromHeader: String? = null
+                    while (true) {
+                        val line = readLine(inStream) ?: break
+                        if (line.isEmpty()) break
+                        if (line.startsWith("Host:", ignoreCase = true)) {
+                            hostFromHeader = line.substring(5).trim()
+                        }
+                        // Strip persistent connection headers to avoid pipeline cross-talk
+                        if (!line.startsWith("Proxy-Connection:", ignoreCase = true) &&
+                            !line.startsWith("Connection:", ignoreCase = true)
+                        ) {
+                            headers.add(line)
+                        }
+                    }
+
+                    val rawHost = uri?.host ?: hostFromHeader?.substringBefore(":") ?: ""
+                    val port = when {
+                        uri?.port != null && uri.port != -1 -> uri.port
+                        hostFromHeader?.contains(":") == true -> hostFromHeader.substringAfter(":").toIntOrNull() ?: 80
+                        else -> 80
+                    }
+
+                    if (rawHost.isNotBlank()) {
+                        val targetAddresses = try {
+                            resolveHost(rawHost)
+                        } catch (e: Exception) {
+                            try {
+                                outStream.write("HTTP/1.1 504 Gateway Timeout\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                                outStream.flush()
+                            } catch (_: Exception) {}
+                            client.close()
+                            return@withContext
+                        }
+
                         val targetSocket = Socket()
-                        targetSocket.connect(InetSocketAddress(targetAddresses.first(), port), 10_000)
-                        val targetOut = targetSocket.getOutputStream()
-                        val path = (uri?.rawPath ?: "/") + if (uri?.rawQuery != null) "?${uri.rawQuery}" else ""
-                        val rewrittenLine = "${parts[0]} $path ${if (parts.size > 2) parts[2] else "HTTP/1.1"}\r\n"
-                        targetOut.write(rewrittenLine.toByteArray(Charsets.US_ASCII))
-                        pipeSockets(client, targetSocket)
-                        return@withContext
+                        activeSockets.add(targetSocket)
+                        try {
+                            targetSocket.soTimeout = 30_000
+                            targetSocket.connect(InetSocketAddress(targetAddresses.first(), port), 10_000)
+                            val targetOut = targetSocket.getOutputStream()
+                            val path = (uri?.rawPath ?: if (uriStr.startsWith("/")) uriStr else "/") +
+                                    (if (uri?.rawQuery != null) "?${uri.rawQuery}" else "")
+                            val rewrittenLine = "$method $path ${if (parts.size > 2) parts[2] else "HTTP/1.1"}\r\n"
+                            targetOut.write(rewrittenLine.toByteArray(Charsets.US_ASCII))
+
+                            // Send Host header if not already in headers
+                            if (hostFromHeader != null && headers.none { it.startsWith("Host:", ignoreCase = true) }) {
+                                targetOut.write("Host: $hostFromHeader\r\n".toByteArray(Charsets.US_ASCII))
+                            }
+                            for (h in headers) {
+                                targetOut.write("$h\r\n".toByteArray(Charsets.US_ASCII))
+                            }
+                            // Force connection close to prevent Keep-Alive cross-domain multiplexing
+                            targetOut.write("Connection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                            targetOut.flush()
+
+                            pipeSockets(client, targetSocket)
+                            return@withContext
+                        } catch (e: Exception) {
+                            try {
+                                outStream.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                                outStream.flush()
+                            } catch (_: Exception) {}
+                            client.close()
+                            targetSocket.close()
+                            activeSockets.remove(targetSocket)
+                            return@withContext
+                        }
                     }
                 }
                 client.close()
             }
         } catch (e: Exception) {
             try { client.close() } catch (_: Exception) {}
+        } finally {
+            activeSockets.remove(client)
         }
     }
 
@@ -231,6 +308,7 @@ object LocalDohProxy {
             } catch (_: Exception) {}
             finally {
                 try { s2.shutdownOutput() } catch (_: Exception) {}
+                try { s1.shutdownInput() } catch (_: Exception) {}
             }
         }
         val j2 = launch(Dispatchers.IO) {
@@ -246,12 +324,15 @@ object LocalDohProxy {
             } catch (_: Exception) {}
             finally {
                 try { s1.shutdownOutput() } catch (_: Exception) {}
+                try { s2.shutdownInput() } catch (_: Exception) {}
             }
         }
         j1.join()
         j2.join()
         try { s1.close() } catch (_: Exception) {}
         try { s2.close() } catch (_: Exception) {}
+        activeSockets.remove(s1)
+        activeSockets.remove(s2)
     }
 
     @Synchronized
@@ -272,5 +353,11 @@ object LocalDohProxy {
         serverSocket = null
         proxyJob?.cancel()
         proxyJob = null
+
+        // Force close all lingering active socket tunnels
+        for (sock in activeSockets) {
+            try { sock.close() } catch (_: Exception) {}
+        }
+        activeSockets.clear()
     }
 }

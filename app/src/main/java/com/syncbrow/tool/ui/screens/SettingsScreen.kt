@@ -31,6 +31,7 @@ import androidx.navigation.NavController
 import com.syncbrow.tool.R
 import com.syncbrow.tool.data.AppDatabase
 import com.syncbrow.tool.data.SettingsRepository
+import com.syncbrow.tool.net.LocalDohProxy
 import com.syncbrow.tool.util.CryptoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -142,13 +143,13 @@ fun SettingsScreen(navController: NavController) {
             modifier = Modifier.clickable {
                 if (pmEncryptionEnabled && pmRealPasswordHash.isNotEmpty()) {
                     val now = SystemClock.elapsedRealtime()
-                    if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp < 3600_000L) {
+                    if (pmLockoutTimestamp in 1..now && now - pmLockoutTimestamp < 3600_000L) {
                         Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
                     } else {
-                        if (now - pmLastAuthTimestamp < 30 * 60 * 1000L) {
+                        if (pmLastAuthTimestamp in 1..now && now - pmLastAuthTimestamp < 30 * 60 * 1000L) {
                             navController.navigate("password_manager")
                         } else {
-                            if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp >= 3600_000L) {
+                            if (pmLockoutTimestamp > 0 && (now < pmLockoutTimestamp || now - pmLockoutTimestamp >= 3600_000L)) {
                                 scope.launch(Dispatchers.IO) { settingsRepository.resetPmLockout() }
                             }
                             pmInputPassword = ""
@@ -168,12 +169,22 @@ fun SettingsScreen(navController: NavController) {
             modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
         )
 
+        val isDohSupported = remember { LocalDohProxy.isSupported() }
         // DoH Toggle (Option A ProxyController based)
         ListItem(
             headlineContent = { Text(stringResource(R.string.settings_doh_title)) },
-            supportingContent = { Text(stringResource(R.string.settings_doh_desc)) },
+            supportingContent = { 
+                Text(
+                    if (isDohSupported) stringResource(R.string.settings_doh_desc)
+                    else stringResource(R.string.settings_doh_unsupported)
+                ) 
+            },
             trailingContent = {
-                Switch(checked = dohEnabled, onCheckedChange = { scope.launch { settingsRepository.setDohEnabled(it) } })
+                Switch(
+                    checked = dohEnabled && isDohSupported,
+                    enabled = isDohSupported,
+                    onCheckedChange = { scope.launch { settingsRepository.setDohEnabled(it) } }
+                )
             }
         )
 

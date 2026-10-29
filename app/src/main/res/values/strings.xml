@@ -174,4 +174,6 @@
     <string name="scan_result_copy">Copy Content</string>
     <string name="scan_result_search">Search Web</string>
     <string name="scan_result_share">Share</string>
+    <string name="pm_reencrypt_failed">Password migration failed. Changes reverted.</string>
+    <string name="settings_doh_unsupported">Device WebView does not support proxy override</string>
 </resources>

@@ -13,11 +13,17 @@ interface PasswordDao {
     @Query("SELECT * FROM password_table ORDER BY timestamp DESC")
     fun getAllPasswords(): Flow<List<PasswordEntity>>
 
+    @Query("SELECT * FROM password_table")
+    suspend fun getAllPasswordsList(): List<PasswordEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPassword(password: PasswordEntity)
 
     @Update
     suspend fun updatePassword(password: PasswordEntity)
+
+    @Update
+    suspend fun updatePasswords(passwords: List<PasswordEntity>)
 
     @Delete
     suspend fun deletePassword(password: PasswordEntity)

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -181,13 +182,34 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
     var browserPmInputUsername by remember { mutableStateOf("") }
     var browserPmInputPassword by remember { mutableStateOf("") }
 
-    // Extract host and parent domain for safe password matching
+    var isDecoySession by rememberSaveable { mutableStateOf(false) }
+
+    val decoyPasswords = remember {
+        listOf(
+            PasswordEntity(id = -101, siteName = "google.com", username = "alex.miller@gmail.com", password = "P@ssw0rdGoogle#2024", timestamp = System.currentTimeMillis()),
+            PasswordEntity(id = -102, siteName = "github.com", username = "alexmiller-dev", password = "ghp_X7v91bK9zL0m2Qp8aJ4e", timestamp = System.currentTimeMillis()),
+            PasswordEntity(id = -103, siteName = "microsoft.com", username = "alex.m@outlook.com", password = "MsftSecret!982", timestamp = System.currentTimeMillis()),
+            PasswordEntity(id = -104, siteName = "amazon.com", username = "alex.miller@gmail.com", password = "AmzShop_Secure@77", timestamp = System.currentTimeMillis()),
+            PasswordEntity(id = -105, siteName = "netflix.com", username = "alex.miller@gmail.com", password = "StreamNetflix!4K", timestamp = System.currentTimeMillis())
+        )
+    }
+
+    // Extract host and parent domain for safe password matching (handling multi-part TLDs like .co.uk, .com.cn)
     val (currentHost, parentHost) = remember(currentDisplayUrl) {
         try {
             val uri = java.net.URI(currentDisplayUrl)
             val host = uri.host?.lowercase() ?: ""
             val parts = host.split(".")
-            val parent = if (parts.size >= 2) parts.takeLast(2).joinToString(".") else host
+            val multiPartTlds = setOf("co", "com", "net", "org", "gov", "edu", "ac")
+            val parent = when {
+                parts.size >= 3 && multiPartTlds.contains(parts[parts.size - 2]) && parts.last().length == 2 -> {
+                    parts.takeLast(3).joinToString(".")
+                }
+                parts.size >= 2 -> {
+                    parts.takeLast(2).joinToString(".")
+                }
+                else -> host
+            }
             Pair(host, parent)
         } catch (_: Exception) {
             Pair("", "")
@@ -202,6 +224,18 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             passwordDao.getPasswordsBySite(currentHost, parentHost)
         }
     }.collectAsState(initial = emptyList())
+
+    val displayedSitePasswords = remember(isDecoySession, sitePasswords, currentHost, parentHost, decoyPasswords) {
+        if (isDecoySession) {
+            decoyPasswords.filter {
+                it.siteName.equals(currentHost, ignoreCase = true) ||
+                it.siteName.equals(parentHost, ignoreCase = true) ||
+                currentHost.endsWith("." + it.siteName)
+            }
+        } else {
+            sitePasswords
+        }
+    }
     
     // Stable WebView instance that persists across recompositions
     val webView = remember { 
@@ -625,14 +659,14 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                 FloatingActionButton(
                     onClick = {
                         if (pmEncryptionEnabled && pmRealPasswordHash.isNotEmpty()) {
-                            val now = System.currentTimeMillis()
-                            if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp < 3600_000L) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (pmLockoutTimestamp in 1..now && now - pmLockoutTimestamp < 3600_000L) {
                                 Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
                             } else {
-                                if (now - pmLastAuthTimestamp < 30 * 60 * 1000L) {
+                                if (pmLastAuthTimestamp in 1..now && now - pmLastAuthTimestamp < 30 * 60 * 1000L) {
                                     showBrowserPmPanel = true
                                 } else {
-                                    if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp >= 3600_000L) {
+                                    if (pmLockoutTimestamp > 0 && (now < pmLockoutTimestamp || now - pmLockoutTimestamp >= 3600_000L)) {
                                         scope.launch(Dispatchers.IO) { settingsRepository.resetPmLockout() }
                                     }
                                     browserPmInput = ""
@@ -782,16 +816,18 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                                 settingsRepository.resetPmLockout()
                                 settingsRepository.setPmLastAuthTimestamp(android.os.SystemClock.elapsedRealtime())
                             }
+                            isDecoySession = false
                             Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
                             showBrowserPmVerifyDialog = false
                             showBrowserPmPanel = true
                         }
                         pmEmergencyPasswordHash.isNotEmpty() && SettingsRepository.verifyPassword(browserPmInput, pmEmergencyPasswordHash) -> {
-                            // Decoy mode: Do NOT delete passwords
+                            // Decoy mode: Do NOT delete passwords, activate fake accounts
                             scope.launch(Dispatchers.IO) {
                                 settingsRepository.resetPmLockout()
                                 settingsRepository.setPmLastAuthTimestamp(android.os.SystemClock.elapsedRealtime())
                             }
+                            isDecoySession = true
                             Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
                             showBrowserPmVerifyDialog = false
                             showBrowserPmPanel = true
@@ -836,7 +872,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
             title = { Text(stringResource(R.string.pm_title)) },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    if (sitePasswords.isEmpty()) {
+                    if (displayedSitePasswords.isEmpty()) {
                         Text(
                             stringResource(R.string.pm_no_site_passwords),
                             style = MaterialTheme.typography.bodyMedium,
@@ -845,13 +881,17 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                         )
                     } else {
                         LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
-                            items(sitePasswords) { pw ->
+                            items(displayedSitePasswords) { pw ->
                                 var showThisPw by remember { mutableStateOf(false) }
-                                val plainPassword = remember(pw) {
-                                    try {
-                                        CryptoManager.decrypt(pw.password)
-                                    } catch (e: Exception) {
-                                        "******"
+                                val plainPassword = remember(pw, isDecoySession) {
+                                    if (isDecoySession) {
+                                        pw.password
+                                    } else {
+                                        try {
+                                            CryptoManager.decrypt(pw.password)
+                                        } catch (e: Exception) {
+                                            "******"
+                                        }
                                     }
                                 }
                                 Column(modifier = Modifier.padding(vertical = 4.dp)) {

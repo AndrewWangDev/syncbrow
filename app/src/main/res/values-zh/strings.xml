@@ -174,4 +174,6 @@
     <string name="scan_result_copy">复制内容</string>
     <string name="scan_result_search">搜索网页</string>
     <string name="scan_result_share">分享</string>
+    <string name="pm_reencrypt_failed">密码重加密迁移失败，已恢复原设置</string>
+    <string name="settings_doh_unsupported">当前系统 WebView 不支持代理重定向，无法启用 DoH</string>
 </resources>
