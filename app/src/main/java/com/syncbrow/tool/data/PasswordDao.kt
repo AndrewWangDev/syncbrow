@@ -25,6 +25,6 @@ interface PasswordDao {
     @Query("DELETE FROM password_table")
     suspend fun deleteAllPasswords()
 
-    @Query("SELECT * FROM password_table WHERE siteName LIKE '%' || :siteQuery || '%' ORDER BY timestamp DESC")
-    fun getPasswordsBySite(siteQuery: String): Flow<List<PasswordEntity>>
+    @Query("SELECT * FROM password_table WHERE siteName = :exactHost OR siteName = :parentDomain OR :exactHost LIKE '%.' || siteName ORDER BY timestamp DESC")
+    fun getPasswordsBySite(exactHost: String, parentDomain: String): Flow<List<PasswordEntity>>
 }

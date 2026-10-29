@@ -23,7 +23,9 @@ import androidx.navigation.NavController
 import com.syncbrow.tool.R
 import com.syncbrow.tool.data.AppDatabase
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 import com.syncbrow.tool.data.BookmarkEntity
@@ -187,74 +189,78 @@ fun HistoryScreen(navController: NavController) {
                                 headlineContent = { Text(download.filename, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 supportingContent = { Text(download.localPath ?: download.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 modifier = Modifier.clickable {
-                                    val path = download.localPath
-                                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                                    var file: java.io.File? = if (path != null) java.io.File(path) else null
-                                    if (file == null || !file.exists()) {
-                                        val candidate = java.io.File(downloadsDir, download.filename)
-                                        if (candidate.exists()) {
-                                            file = candidate
-                                        } else {
-                                            val baseName = candidate.nameWithoutExtension
-                                            val ext = candidate.extension
-                                            if (baseName.isNotBlank()) {
-                                                val matched = downloadsDir.listFiles()?.filter { f ->
-                                                    f.name.startsWith(baseName) && (ext.isEmpty() || f.name.endsWith(ext))
-                                                }?.maxByOrNull { it.lastModified() }
-                                                if (matched != null && matched.exists()) {
-                                                    file = matched
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (file != null && file.exists()) {
-                                        try {
-                                            val uri = androidx.core.content.FileProvider.getUriForFile(
-                                                context,
-                                                "${context.packageName}.fileprovider",
-                                                file
-                                            )
-                                            val extension = file.extension.lowercase()
-                                            if (extension == "apk" && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                                if (!context.packageManager.canRequestPackageInstalls()) {
-                                                    val settingsIntent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                                                        data = Uri.parse("package:${context.packageName}")
-                                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    scope.launch(Dispatchers.IO) {
+                                        val path = download.localPath
+                                        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                        var file: java.io.File? = if (path != null) java.io.File(path) else null
+                                        if (file == null || !file.exists()) {
+                                            val candidate = java.io.File(downloadsDir, download.filename)
+                                            if (candidate.exists()) {
+                                                file = candidate
+                                            } else {
+                                                val baseName = candidate.nameWithoutExtension
+                                                val ext = candidate.extension
+                                                if (baseName.isNotBlank()) {
+                                                    val matched = downloadsDir.listFiles()?.filter { f ->
+                                                        f.name.startsWith(baseName) && (ext.isEmpty() || f.name.endsWith(ext))
+                                                    }?.maxByOrNull { it.lastModified() }
+                                                    if (matched != null && matched.exists()) {
+                                                        file = matched
                                                     }
-                                                    context.startActivity(settingsIntent)
-                                                    android.widget.Toast.makeText(context, context.getString(R.string.download_permission_install_hint), android.widget.Toast.LENGTH_LONG).show()
-                                                    return@clickable
                                                 }
                                             }
-
-                                            val intent = Intent(Intent.ACTION_VIEW)
-                                            val mimeType = if (extension == "apk") {
-                                                "application/vnd.android.package-archive"
-                                            } else {
-                                                context.contentResolver.getType(uri) ?: "*/*"
-                                            }
-                                            
-                                            intent.setDataAndType(uri, mimeType)
-                                            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            
-                                            val chooserTitle = if (extension == "apk") {
-                                                context.getString(R.string.download_install_apk)
-                                            } else {
-                                                context.getString(R.string.download_open_file)
-                                            }
-                                            context.startActivity(Intent.createChooser(intent, chooserTitle))
-                                        } catch (e: Exception) {
-                                            android.widget.Toast.makeText(context, R.string.download_file_error, android.widget.Toast.LENGTH_SHORT).show()
                                         }
-                                    } else {
-                                        // Legacy record or no path, try URL
-                                        try {
-                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(download.url))
-                                            context.startActivity(intent)
-                                        } catch (_: Exception) {
-                                            android.widget.Toast.makeText(context, R.string.download_file_missing, android.widget.Toast.LENGTH_SHORT).show()
+
+                                        withContext(Dispatchers.Main) {
+                                            if (file != null && file.exists()) {
+                                                try {
+                                                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                                                        context,
+                                                        "${context.packageName}.fileprovider",
+                                                        file
+                                                    )
+                                                    val extension = file.extension.lowercase()
+                                                    if (extension == "apk" && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                        if (!context.packageManager.canRequestPackageInstalls()) {
+                                                            val settingsIntent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                                                data = Uri.parse("package:${context.packageName}")
+                                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                            }
+                                                            context.startActivity(settingsIntent)
+                                                            android.widget.Toast.makeText(context, context.getString(R.string.download_permission_install_hint), android.widget.Toast.LENGTH_LONG).show()
+                                                            return@withContext
+                                                        }
+                                                    }
+
+                                                    val intent = Intent(Intent.ACTION_VIEW)
+                                                    val mimeType = if (extension == "apk") {
+                                                        "application/vnd.android.package-archive"
+                                                    } else {
+                                                        context.contentResolver.getType(uri) ?: "*/*"
+                                                    }
+                                                    
+                                                    intent.setDataAndType(uri, mimeType)
+                                                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    
+                                                    val chooserTitle = if (extension == "apk") {
+                                                        context.getString(R.string.download_install_apk)
+                                                    } else {
+                                                        context.getString(R.string.download_open_file)
+                                                    }
+                                                    context.startActivity(Intent.createChooser(intent, chooserTitle))
+                                                } catch (e: Exception) {
+                                                    android.widget.Toast.makeText(context, R.string.download_file_error, android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                // Legacy record or no path, try URL
+                                                try {
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(download.url))
+                                                    context.startActivity(intent)
+                                                } catch (_: Exception) {
+                                                    android.widget.Toast.makeText(context, R.string.download_file_missing, android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
                                         }
                                     }
                                 },

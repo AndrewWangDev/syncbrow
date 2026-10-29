@@ -7,4 +7,6 @@
     <exclude domain="database" path="scanner_database"/>
     <exclude domain="database" path="scanner_database-wal"/>
     <exclude domain="database" path="scanner_database-shm"/>
+    <!-- Exclude sensitive DataStore preferences containing password hashes and salts -->
+    <exclude domain="file" path="datastore"/>
 </full-backup-content>
