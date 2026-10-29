@@ -85,9 +85,15 @@ fun PasswordManagerScreen(navController: NavController) {
 
     // Monotonic clock for session and lockout
     val nowElapsed = SystemClock.elapsedRealtime()
-    val isSessionValid = (nowElapsed - pmLastAuthTimestamp) < 30 * 60 * 1000L
-    val isLockedOut = pmLockoutTimestamp > 0 && (nowElapsed - pmLockoutTimestamp) < 3600_000L
+    val isSessionValid = pmLastAuthTimestamp in 1..nowElapsed && (nowElapsed - pmLastAuthTimestamp) < 30 * 60 * 1000L
+    val isLockedOut = pmLockoutTimestamp in 1..nowElapsed && (nowElapsed - pmLockoutTimestamp) < 3600_000L
     val needsAuth = encryptionEnabled && realPasswordHash.isNotEmpty() && !isSessionValid && !isSessionAuthed
+
+    LaunchedEffect(needsAuth) {
+        if (needsAuth) {
+            CryptoManager.clearSessionKey()
+        }
+    }
 
     // Active password list: gated behind authentication
     val activePasswordList = remember(needsAuth, isDecoySession, decoyPasswords, rawPasswordList) {
@@ -671,9 +677,43 @@ fun PasswordManagerScreen(navController: NavController) {
                                 }
                                 return@launch
                             }
+
+                            // 1. Decrypt all existing passwords with current session key / plaintext
+                            val existingPasswords = passwordDao.getAllPasswordsList()
+                            val decryptedList = mutableListOf<Pair<PasswordEntity, String>>()
+                            var migrationFailed = false
+
+                            for (item in existingPasswords) {
+                                try {
+                                    val plain = CryptoManager.decrypt(item.password)
+                                    decryptedList.add(Pair(item, plain))
+                                } catch (e: Exception) {
+                                    android.util.Log.e("PasswordManager", "Failed to decrypt password during migration id=${item.id}", e)
+                                    migrationFailed = true
+                                    break
+                                }
+                            }
+
+                            if (migrationFailed) {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, context.getString(R.string.pm_reencrypt_failed), Toast.LENGTH_LONG).show()
+                                }
+                                return@launch
+                            }
+
+                            // 2. Derive and set new session key
                             val masterHash = SettingsRepository.hashPassword(settingsRealPassword)
                             val salt = SettingsRepository.getSaltFromHash(masterHash) ?: "syncbrow_default_salt".toByteArray()
                             CryptoManager.setSessionPassword(settingsRealPassword, salt)
+
+                            // 3. Re-encrypt all existing items with the new session key
+                            val updatedEntities = decryptedList.map { (entity, plain) ->
+                                val newCipher = CryptoManager.encrypt(plain)
+                                entity.copy(password = newCipher)
+                            }
+                            if (updatedEntities.isNotEmpty()) {
+                                passwordDao.updatePasswords(updatedEntities)
+                            }
 
                             settingsRepository.setPmEncryptionEnabled(true)
                             settingsRepository.setPmRealPasswordHash(masterHash)
@@ -683,12 +723,40 @@ fun PasswordManagerScreen(navController: NavController) {
                                 settingsRepository.setPmEmergencyPasswordHash("")
                             }
                             settingsRepository.resetPmLockout()
+                            settingsRepository.setPmLastAuthTimestamp(android.os.SystemClock.elapsedRealtime())
                             withContext(Dispatchers.Main) {
                                 isSessionAuthed = true
                                 isDecoySession = false
                                 Toast.makeText(context, context.getString(R.string.pm_encryption_saved), Toast.LENGTH_SHORT).show()
+                                showSettingsDialog = false
                             }
                         } else {
+                            // Disabling encryption: Decrypt existing items to plain text so they aren't lost
+                            val existingPasswords = passwordDao.getAllPasswordsList()
+                            val plainList = mutableListOf<PasswordEntity>()
+                            var migrationFailed = false
+
+                            for (item in existingPasswords) {
+                                try {
+                                    val plain = CryptoManager.decrypt(item.password)
+                                    plainList.add(item.copy(password = plain))
+                                } catch (e: Exception) {
+                                    migrationFailed = true
+                                    break
+                                }
+                            }
+
+                            if (migrationFailed) {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, context.getString(R.string.pm_reencrypt_failed), Toast.LENGTH_LONG).show()
+                                }
+                                return@launch
+                            }
+
+                            if (plainList.isNotEmpty()) {
+                                passwordDao.updatePasswords(plainList)
+                            }
+
                             CryptoManager.clearSessionKey()
                             settingsRepository.setPmEncryptionEnabled(false)
                             settingsRepository.setPmRealPasswordHash("")
@@ -698,10 +766,8 @@ fun PasswordManagerScreen(navController: NavController) {
                                 isSessionAuthed = false
                                 isDecoySession = false
                                 Toast.makeText(context, context.getString(R.string.pm_encryption_disabled), Toast.LENGTH_SHORT).show()
+                                showSettingsDialog = false
                             }
-                        }
-                        withContext(Dispatchers.Main) {
-                            showSettingsDialog = false
                         }
                     }
                 }) {

@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.syncbrow.tool.data.SettingsRepository
 import com.syncbrow.tool.net.LocalDohProxy
+import com.syncbrow.tool.util.CryptoManager
 import com.syncbrow.tool.ui.theme.MySimpleScannerTheme
 import com.syncbrow.tool.ui.MainScreen
 import kotlinx.coroutines.flow.combine
@@ -86,6 +87,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         LocalDohProxy.stop()
+        CryptoManager.clearSessionKey()
         if (isIncognito) {
             // Clean up cookies upon process termination if incognito was enabled
             CookieManager.getInstance().removeAllCookies(null)
