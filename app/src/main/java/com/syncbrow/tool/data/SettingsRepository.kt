@@ -20,6 +20,7 @@ class SettingsRepository(private val context: Context) {
         val LANGUAGE_KEY = stringPreferencesKey("language") // "zh" or "en"
         val THEME_MODE_KEY = intPreferencesKey("theme_mode") // 0: System, 1: Light, 2: Dark
         val DOH_ENABLED_KEY = booleanPreferencesKey("doh_enabled")
+        val DOH_PROVIDER_KEY = stringPreferencesKey("doh_provider") // "opendns", "cloudflare", "google"
         val AD_BLOCK_KEY = booleanPreferencesKey("ad_block_enabled")
         val TRACKER_BLOCK_KEY = booleanPreferencesKey("tracker_block")
         val INCOGNITO_KEY = booleanPreferencesKey("incognito_mode")
@@ -66,6 +67,23 @@ class SettingsRepository(private val context: Context) {
             return "SALT:$saltHex:$hashHex"
         }
 
+        fun getSaltFromHash(storedHash: String): ByteArray? {
+            if (storedHash.startsWith("SALT:")) {
+                val parts = storedHash.removePrefix("SALT:").split(":")
+                if (parts.size == 2) {
+                    val saltHex = parts[0]
+                    return try {
+                        ByteArray(saltHex.length / 2) { i ->
+                            saltHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+                        }
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+            return null
+        }
+
         fun verifyPassword(input: String, storedHash: String): Boolean {
             if (storedHash.isEmpty()) return false
             return if (storedHash.startsWith("SALT:")) {
@@ -73,12 +91,24 @@ class SettingsRepository(private val context: Context) {
                 if (parts.size == 2) {
                     val saltHex = parts[0]
                     val expectedHashHex = parts[1]
-                    computeHash(input, saltHex) == expectedHashHex
+                    val computedHashHex = computeHash(input, saltHex)
+                    java.security.MessageDigest.isEqual(
+                        computedHashHex.toByteArray(Charsets.UTF_8),
+                        expectedHashHex.toByteArray(Charsets.UTF_8)
+                    )
                 } else {
-                    computeLegacyPepperHash(input) == storedHash
+                    val legacyHash = computeLegacyPepperHash(input)
+                    java.security.MessageDigest.isEqual(
+                        legacyHash.toByteArray(Charsets.UTF_8),
+                        storedHash.toByteArray(Charsets.UTF_8)
+                    )
                 }
             } else {
-                legacySha256(input) == storedHash
+                val legacy = legacySha256(input)
+                java.security.MessageDigest.isEqual(
+                    legacy.toByteArray(Charsets.UTF_8),
+                    storedHash.toByteArray(Charsets.UTF_8)
+                )
             }
         }
 
@@ -93,7 +123,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     val languageFlow: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[LANGUAGE_KEY] ?: "zh" // Default to Chinese as requested by user context
+        prefs[LANGUAGE_KEY] ?: "zh" // Default to Chinese
     }
 
     val themeModeFlow: Flow<Int> = context.dataStore.data.map { prefs ->
@@ -102,6 +132,10 @@ class SettingsRepository(private val context: Context) {
 
     val dohEnabledFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[DOH_ENABLED_KEY] ?: false
+    }
+
+    val dohProviderFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[DOH_PROVIDER_KEY] ?: "opendns"
     }
 
     suspend fun setLanguage(lang: String) {
@@ -119,6 +153,12 @@ class SettingsRepository(private val context: Context) {
     suspend fun setDohEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[DOH_ENABLED_KEY] = enabled
+        }
+    }
+
+    suspend fun setDohProvider(provider: String) {
+        context.dataStore.edit { prefs ->
+            prefs[DOH_PROVIDER_KEY] = provider
         }
     }
 

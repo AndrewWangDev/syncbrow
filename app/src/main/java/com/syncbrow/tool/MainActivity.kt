@@ -12,21 +12,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.syncbrow.tool.data.SettingsRepository
+import com.syncbrow.tool.net.LocalDohProxy
 import com.syncbrow.tool.ui.theme.MySimpleScannerTheme
 import com.syncbrow.tool.ui.MainScreen
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import androidx.activity.viewModels
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.syncbrow.tool.ui.MainViewModel
-
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 
 class MainActivity : AppCompatActivity() {
     private lateinit var settingsRepository: SettingsRepository
     private var isIncognito: Boolean = false
-    private var initialUrlState by mutableStateOf<String?>(null)
     private val mainViewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,9 +30,9 @@ class MainActivity : AppCompatActivity() {
         settingsRepository = SettingsRepository(this)
         
         // Handle initial URL from intent
-        initialUrlState = intent.dataString ?: intent.getStringExtra("url")
+        val initialUrl = intent.dataString ?: intent.getStringExtra("url")
         
-        // Observe Theme and Incognito settings
+        // Observe Theme settings
         lifecycleScope.launch {
             settingsRepository.themeModeFlow.collect { mode ->
                 when (mode) {
@@ -47,13 +43,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
+        // Track incognito mode state without nuking standard cookies
         lifecycleScope.launch {
             settingsRepository.incognitoEnabledFlow.collect {
                 isIncognito = it
-                if (it) {
-                    CookieManager.getInstance().removeAllCookies(null)
-                    CookieManager.getInstance().flush()
-                    WebStorage.getInstance().deleteAllData()
+            }
+        }
+
+        // Manage Local DoH Proxy lifecycle (Option A)
+        lifecycleScope.launch {
+            combine(settingsRepository.dohEnabledFlow, settingsRepository.dohProviderFlow) { enabled, provider ->
+                Pair(enabled, provider)
+            }.collect { (enabled, provider) ->
+                if (enabled) {
+                    LocalDohProxy.start(this@MainActivity, provider)
+                } else {
+                    LocalDohProxy.stop()
                 }
             }
         }
@@ -64,7 +69,7 @@ class MainActivity : AppCompatActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MainScreen(initialUrl = initialUrlState, mainViewModel = mainViewModel)
+                    MainScreen(initialUrl = initialUrl, mainViewModel = mainViewModel)
                 }
             }
         }
@@ -75,14 +80,14 @@ class MainActivity : AppCompatActivity() {
         setIntent(intent)
         val newUrl = intent?.dataString ?: intent?.getStringExtra("url")
         if (newUrl != null) {
-            initialUrlState = newUrl
             mainViewModel.onNewIntent(newUrl)
         }
     }
 
     override fun onDestroy() {
+        LocalDohProxy.stop()
         if (isIncognito) {
-            // "Exit before clear cookies"
+            // Clean up cookies upon process termination if incognito was enabled
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
             WebStorage.getInstance().deleteAllData()

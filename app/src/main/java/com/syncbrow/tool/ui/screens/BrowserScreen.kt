@@ -75,10 +75,36 @@ import androidx.compose.foundation.lazy.items
 import com.syncbrow.tool.util.PasswordUtils
 import kotlinx.coroutines.withContext
 
-private object BrowserSettingsHolder {
-    @Volatile
-    var client: OkHttpClient? = null
 
+private object ScriptCache {
+    @Volatile var addonJs: String? = null
+    @Volatile var removeJs: String? = null
+
+    fun getAddonJs(context: Context): String {
+        return addonJs ?: synchronized(this) {
+            addonJs ?: context.assets.open("addon.user.js").bufferedReader().use { it.readText() }.also { addonJs = it }
+        }
+    }
+
+    fun getRemoveJs(context: Context): String {
+        return removeJs ?: synchronized(this) {
+            removeJs ?: context.assets.open("remove.user.js").bufferedReader().use { it.readText() }.also { removeJs = it }
+        }
+    }
+}
+
+private fun copyToClipboardSensitive(context: Context, label: String, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val clip = ClipData.newPlainText(label, text)
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        clip.description.extras = android.os.PersistableBundle().apply {
+            putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    clipboard.setPrimaryClip(clip)
+}
+
+private object BrowserSettingsHolder {
     @Volatile
     var dohEnabled: Boolean = false
     
@@ -155,27 +181,25 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
     var browserPmInputUsername by remember { mutableStateOf("") }
     var browserPmInputPassword by remember { mutableStateOf("") }
 
-    // Extract host from current URL for password matching
-    val currentHost = remember(currentDisplayUrl) {
+    // Extract host and parent domain for safe password matching
+    val (currentHost, parentHost) = remember(currentDisplayUrl) {
         try {
-            java.net.URI(currentDisplayUrl).host ?: currentDisplayUrl
+            val uri = java.net.URI(currentDisplayUrl)
+            val host = uri.host?.lowercase() ?: ""
+            val parts = host.split(".")
+            val parent = if (parts.size >= 2) parts.takeLast(2).joinToString(".") else host
+            Pair(host, parent)
         } catch (_: Exception) {
-            currentDisplayUrl
+            Pair("", "")
         }
     }
 
     val passwordDao = remember(db) { db.passwordDao() }
-    val sitePasswords by remember(passwordDao, currentHost) {
-        passwordDao.getPasswordsBySite(currentHost).map { list ->
-            list.map { entity ->
-                val plain = try {
-                    CryptoManager.decrypt(entity.password)
-                } catch (e: Exception) {
-                    Log.e("BrowserScreen", "Failed to decrypt password id=${entity.id}", e)
-                    "******"
-                }
-                entity.copy(password = plain)
-            }
+    val sitePasswords by remember(passwordDao, currentHost, parentHost) {
+        if (currentHost.isBlank() || currentHost == "about:blank" || !currentHost.contains(".")) {
+            kotlinx.coroutines.flow.flowOf(emptyList())
+        } else {
+            passwordDao.getPasswordsBySite(currentHost, parentHost)
         }
     }.collectAsState(initial = emptyList())
     
@@ -240,7 +264,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
     var progress by remember { mutableFloatStateOf(0f) }
     val focusManager = LocalFocusManager.current
 
-    LaunchedEffect(dohEnabled, adBlockEnabled, trackerBlockEnabled, forceEnableCopyPaste, removeRedirectPromptEnabled, incognitoEnabled) {
+    LaunchedEffect(dohEnabled, adBlockEnabled, trackerBlockEnabled, forceEnableCopyPaste, removeRedirectPromptEnabled, incognitoEnabled, safeBrowsingEnabled) {
         BrowserSettingsHolder.dohEnabled = dohEnabled
         BrowserSettingsHolder.adBlockEnabled = adBlockEnabled
         BrowserSettingsHolder.trackerBlockEnabled = trackerBlockEnabled
@@ -255,42 +279,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
         } else {
             webView.settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
         }
-        
-        if (dohEnabled) {
-            try {
-                val bootstrapClient = OkHttpClient.Builder().build()
-                val dns = DnsOverHttps.Builder().client(bootstrapClient)
-                    .url(
-                        okhttp3.HttpUrl.Builder()
-                            .scheme("https")
-                            .host("146.112.41.2")
-                            .addPathSegment("dns-query")
-                            .build()
-                    )
-                    .bootstrapDnsHosts(InetAddress.getByName("146.112.41.2"))
-                    .build()
-                val dispatcher = Dispatcher().apply {
-                    maxRequests = 128
-                    maxRequestsPerHost = 32
-                }
-                val pool = ConnectionPool(32, 5, TimeUnit.MINUTES)
-                BrowserSettingsHolder.client = OkHttpClient.Builder()
-                    .dispatcher(dispatcher)
-                    .connectionPool(pool)
-                    .dns(dns)
-                    .connectTimeout(10, TimeUnit.SECONDS)
-                    .readTimeout(10, TimeUnit.SECONDS)
-                    .followRedirects(true)
-                    .followSslRedirects(true)
-                    .build()
-            } catch (e: Exception) {
-                Log.e("DoH_Setup", "Failed to initialize DoH client: ${e.message}")
-                BrowserSettingsHolder.client = null
-                BrowserSettingsHolder.dohEnabled = false
-            }
-        } else {
-            BrowserSettingsHolder.client = null
-        }
+        webView.settings.safeBrowsingEnabled = safeBrowsingEnabled
     }
 
     fun handleSearchOrNav(input: String) {
@@ -556,12 +545,10 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                             Log.d("BrowserScreen", "onPageFinished: $url")
                             swipeRefreshLayout.isRefreshing = false
                             
-                            // Inject addons
+                            // Inject addons with memory cached scripts
                             if (BrowserSettingsHolder.forceEnableCopyPaste) {
                                 try {
-                                    val inputStream = context.assets.open("addon.user.js")
-                                    val jsText = inputStream.bufferedReader().use { it.readText() }
-                                    view?.evaluateJavascript(jsText, null)
+                                    view?.evaluateJavascript(ScriptCache.getAddonJs(context), null)
                                 } catch (e: Exception) {
                                     Log.e("BrowserScreen", "Addon failed", e)
                                 }
@@ -569,9 +556,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
 
                             if (BrowserSettingsHolder.removeRedirectPromptEnabled) {
                                 try {
-                                    val inputStream = context.assets.open("remove.user.js")
-                                    val jsText = inputStream.bufferedReader().use { it.readText() }
-                                    view?.evaluateJavascript(jsText, null)
+                                    view?.evaluateJavascript(ScriptCache.getRemoveJs(context), null)
                                 } catch (e: Exception) {
                                     Log.e("BrowserScreen", "Redirect removal failed", e)
                                 }
@@ -600,12 +585,14 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
 
                         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                             if (request == null) return null
-                            val urlString = request.url.toString()
-                            val host = request.url.host ?: ""
+                            val host = request.url.host?.lowercase() ?: ""
 
-                            val isExempt = host.endsWith("google.com") || host.endsWith("bing.com") || 
-                                           host.endsWith("microsoft.com") || host.endsWith("apple.com") ||
-                                           host.endsWith("github.com")
+                            fun matchesDomain(target: String): Boolean =
+                                host == target || host.endsWith(".$target")
+
+                            val isExempt = matchesDomain("google.com") || matchesDomain("bing.com") || 
+                                           matchesDomain("microsoft.com") || matchesDomain("apple.com") ||
+                                           matchesDomain("github.com")
 
                             if (!isExempt && BrowserSettingsHolder.adBlockEnabled && BlockList.shouldBlockAd(host)) {
                                 return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream("".toByteArray()))
@@ -614,63 +601,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                                 return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream("".toByteArray()))
                             }
 
-                            val isDoHEnabled = BrowserSettingsHolder.dohEnabled
-                            val httpClient = BrowserSettingsHolder.client
-
-                            if (!isDoHEnabled || httpClient == null || request.method.lowercase() != "get" || !urlString.startsWith("http")) {
-                                return super.shouldInterceptRequest(view, request)
-                            }
-
-                            try {
-                                val okRequestBuilder = Request.Builder().url(urlString)
-                                request.requestHeaders?.forEach { (key, value) ->
-                                    if (!key.equals("Accept-Encoding", ignoreCase = true)) {
-                                        try { okRequestBuilder.addHeader(key, value) } catch (_: Exception) {}
-                                    }
-                                }
-                                CookieManager.getInstance().getCookie(urlString)?.let {
-                                    okRequestBuilder.addHeader("Cookie", it)
-                                }
-                                
-                                val callClient = if (request.isForMainFrame) {
-                                    httpClient.newBuilder()
-                                        .followRedirects(false)
-                                        .followSslRedirects(false)
-                                        .build()
-                                } else {
-                                    httpClient
-                                }
-                                val response = callClient.newCall(okRequestBuilder.build()).execute()
-
-                                if (request.isForMainFrame && response.isRedirect) {
-                                    val location = response.header("Location")
-                                    if (!location.isNullOrEmpty()) {
-                                        val absoluteUrl = response.request.url.resolve(location)?.toString() ?: location
-                                        val headers = response.headers.toMap().toMutableMap()
-                                        headers["Location"] = absoluteUrl
-                                        val resp = WebResourceResponse("text/html", "UTF-8", response.code, response.message, headers, ByteArrayInputStream(ByteArray(0)))
-                                        response.close()
-                                        return resp
-                                    }
-                                }
-
-                                val responseBody = response.body ?: return super.shouldInterceptRequest(view, request)
-                                val contentType = responseBody.contentType()
-                                val mimeType = contentType?.let { "${it.type}/${it.subtype}" } ?: "text/html"
-                                val encoding = contentType?.charset()?.name() ?: "UTF-8"
-
-                                val responseHeaders = response.headers.toMap().filterKeys { 
-                                    val k = it.lowercase()
-                                    k != "content-type" && k != "content-encoding" && k != "content-length" && k != "transfer-encoding"
-                                }.toMutableMap()
-
-                                response.headers("Set-Cookie").forEach { 
-                                    CookieManager.getInstance().setCookie(urlString, it)
-                                }
-                                return WebResourceResponse(mimeType, encoding, response.code, response.message.ifEmpty { "OK" }, responseHeaders, responseBody.byteStream())
-                            } catch (e: Exception) {
-                                Log.w("DoH_WebView", "Interception failure: ${e.message}")
-                            }
+                            // DoH is handled natively by LocalDohProxy via ProxyController
                             return super.shouldInterceptRequest(view, request)
                         }
                     }
@@ -845,19 +776,21 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                 TextButton(onClick = {
                     when {
                         SettingsRepository.verifyPassword(browserPmInput, pmRealPasswordHash) -> {
+                            val salt = SettingsRepository.getSaltFromHash(pmRealPasswordHash) ?: "syncbrow_default_salt".toByteArray()
+                            CryptoManager.setSessionPassword(browserPmInput, salt)
                             scope.launch(Dispatchers.IO) {
                                 settingsRepository.resetPmLockout()
-                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                                settingsRepository.setPmLastAuthTimestamp(android.os.SystemClock.elapsedRealtime())
                             }
                             Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
                             showBrowserPmVerifyDialog = false
                             showBrowserPmPanel = true
                         }
                         pmEmergencyPasswordHash.isNotEmpty() && SettingsRepository.verifyPassword(browserPmInput, pmEmergencyPasswordHash) -> {
+                            // Decoy mode: Do NOT delete passwords
                             scope.launch(Dispatchers.IO) {
-                                db.passwordDao().deleteAllPasswords()
                                 settingsRepository.resetPmLockout()
-                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                                settingsRepository.setPmLastAuthTimestamp(android.os.SystemClock.elapsedRealtime())
                             }
                             Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
                             showBrowserPmVerifyDialog = false
@@ -868,7 +801,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                             scope.launch(Dispatchers.IO) {
                                 if (newAttempts >= 10) {
                                     settingsRepository.setPmFailedAttempts(newAttempts)
-                                    settingsRepository.setPmLockoutTimestamp(System.currentTimeMillis())
+                                    settingsRepository.setPmLockoutTimestamp(android.os.SystemClock.elapsedRealtime())
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
                                         showBrowserPmVerifyDialog = false
@@ -914,6 +847,13 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                         LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
                             items(sitePasswords) { pw ->
                                 var showThisPw by remember { mutableStateOf(false) }
+                                val plainPassword = remember(pw) {
+                                    try {
+                                        CryptoManager.decrypt(pw.password)
+                                    } catch (e: Exception) {
+                                        "******"
+                                    }
+                                }
                                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -922,7 +862,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(pw.username, style = MaterialTheme.typography.bodyMedium)
                                             Text(
-                                                if (showThisPw) pw.password else "••••••••",
+                                                if (showThisPw) plainPassword else "••••••••",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.outline
                                             )
@@ -937,8 +877,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                                             )
                                         }
                                         IconButton(onClick = {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("password", pw.password))
+                                            copyToClipboardSensitive(context, "password", plainPassword)
                                             Toast.makeText(context, context.getString(R.string.pm_password_copied), Toast.LENGTH_SHORT).show()
                                         }) {
                                             Icon(
@@ -951,7 +890,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                                             browserPmEditingPassword = pw
                                             browserPmInputSite = pw.siteName
                                             browserPmInputUsername = pw.username
-                                            browserPmInputPassword = pw.password
+                                            browserPmInputPassword = plainPassword
                                             showBrowserPmAddEdit = true
                                         }) {
                                             Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.primary)

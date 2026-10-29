@@ -21,7 +21,7 @@
  
     css.type = 'text/css';
  
-    css.innerText = `* {
+    css.innerText = `body, article, section, p, span, div:not([draggable]):not(canvas) {
         -webkit-user-select: text !important;
         -moz-user-select: text !important;
         -ms-user-select: text !important;
