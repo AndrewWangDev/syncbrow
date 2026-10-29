@@ -37,6 +37,7 @@ class DownloadCompletedReceiver : BroadcastReceiver() {
 
                             if (actualPath != null && actualFilename != null) {
                                 Log.d("DownloadReceiver", "Download finished: id=$downloadId, path=$actualPath, name=$actualFilename")
+                                val pendingResult = goAsync()
                                 val db = AppDatabase.getDatabase(context)
                                 CoroutineScope(Dispatchers.IO).launch {
                                     try {
@@ -52,6 +53,8 @@ class DownloadCompletedReceiver : BroadcastReceiver() {
                                         }
                                     } catch (e: Exception) {
                                         Log.e("DownloadReceiver", "Error updating download record", e)
+                                    } finally {
+                                        pendingResult.finish()
                                     }
                                 }
                             }

@@ -1,58 +1,53 @@
 package com.syncbrow.tool.ui
 
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.util.Log
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.ui.unit.dp
-import androidx.compose.material3.*
-import com.syncbrow.tool.ui.screens.AboutScreen
-import com.syncbrow.tool.ui.screens.BrowserScreen
-import com.syncbrow.tool.ui.screens.HistoryScreen
-import com.syncbrow.tool.ui.screens.ScanScreen
-import com.syncbrow.tool.ui.screens.SettingsScreen
-import com.syncbrow.tool.ui.screens.PasswordManagerScreen
-import com.syncbrow.tool.data.SettingsRepository
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.launch
-import android.app.Activity
-import android.content.Intent
-import android.net.Uri
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.TextButton
-
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.syncbrow.tool.data.SettingsRepository
+import com.syncbrow.tool.ui.screens.AboutScreen
+import com.syncbrow.tool.ui.screens.BrowserScreen
+import com.syncbrow.tool.ui.screens.HistoryScreen
+import com.syncbrow.tool.ui.screens.PasswordManagerScreen
+import com.syncbrow.tool.ui.screens.ScanScreen
+import com.syncbrow.tool.ui.screens.SettingsScreen
+import kotlinx.coroutines.launch
 
 sealed class BottomNavItem(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Scan : BottomNavItem("scan", com.syncbrow.tool.R.string.nav_scan, Icons.Default.Search)
@@ -62,7 +57,7 @@ sealed class BottomNavItem(val route: String, val titleRes: Int, val icon: Image
 }
 
 @Composable
-fun MainScreen(initialUrl: String? = null, mainViewModel: com.syncbrow.tool.ui.MainViewModel? = null) {
+fun MainScreen(initialUrl: String? = null, mainViewModel: MainViewModel? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settingsRepository = remember { SettingsRepository(context) }
@@ -77,42 +72,24 @@ fun MainScreen(initialUrl: String? = null, mainViewModel: com.syncbrow.tool.ui.M
         }
     }
 
-    // Helper to handle navigation to a URL
-    suspend fun handleNavIntent(url: String) {
-        val startTime = System.currentTimeMillis()
-        val targetRoutePattern = "${BottomNavItem.Browser.route}?url={url}"
-        val encodedUrl = java.net.URLEncoder.encode(url, "UTF-8")
-        val targetRoute = "${BottomNavItem.Browser.route}?url=$encodedUrl"
-
-        while (System.currentTimeMillis() - startTime < 5000) {
-            try {
-                navController.navigate(targetRoute) {
-                    navController.graph.findStartDestination().id.let { id ->
-                        popUpTo(id) { saveState = true }
-                    }
-                    launchSingleTop = true
-                    restoreState = true
+    // Helper to handle single-shot navigation to a URL
+    fun handleNavIntent(url: String) {
+        try {
+            val encodedUrl = java.net.URLEncoder.encode(url, "UTF-8")
+            val targetRoute = "${BottomNavItem.Browser.route}?url=$encodedUrl"
+            navController.navigate(targetRoute) {
+                navController.graph.findStartDestination().id.let { id ->
+                    popUpTo(id) { saveState = true }
                 }
-                
-                // Once navigate is called, verify we are at least on the Browser tab
-                if (navController.currentDestination?.route == targetRoutePattern) {
-                    break
-                }
-                kotlinx.coroutines.delay(100)
-            } catch (e: Exception) {
-                kotlinx.coroutines.delay(200)
+                launchSingleTop = true
+                restoreState = true
             }
+        } catch (e: Exception) {
+            Log.e("MainScreen", "Failed to navigate to target URL: $url", e)
         }
     }
 
-    // 1. Initial startup URL
-    LaunchedEffect(initialUrl) {
-        if (initialUrl != null) {
-            handleNavIntent(initialUrl)
-        }
-    }
-
-    // 2. Subsequent new intents while the app is alive
+    // Listen for subsequent new intents while the app is alive
     LaunchedEffect(mainViewModel) {
         mainViewModel?.navEvent?.collect { url ->
             handleNavIntent(url)

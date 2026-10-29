@@ -166,4 +166,12 @@
     <string name="scan_flashlight_off">手电筒：关</string>
     <string name="pm_password_decrypt_failed">密码解密失败，禁止覆盖</string>
     <string name="pm_password_encrypt_failed">密码加密失败，已中止保存</string>
+    <string name="settings_doh_provider_title">DoH 节点提供商</string>
+    <string name="doh_provider_opendns">OpenDNS（默认）</string>
+    <string name="doh_provider_cloudflare">Cloudflare</string>
+    <string name="doh_provider_google">Google</string>
+    <string name="scan_result_title">扫描结果</string>
+    <string name="scan_result_copy">复制内容</string>
+    <string name="scan_result_search">搜索网页</string>
+    <string name="scan_result_share">分享</string>
 </resources>

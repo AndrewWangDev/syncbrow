@@ -1,49 +1,43 @@
 package com.syncbrow.tool.ui.screens
 
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.SystemClock
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.os.LocaleListCompat
 import androidx.navigation.NavController
 import com.syncbrow.tool.R
 import com.syncbrow.tool.data.AppDatabase
 import com.syncbrow.tool.data.SettingsRepository
+import com.syncbrow.tool.util.CryptoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.graphics.Color
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material.icons.filled.NetworkCheck
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.draw.rotate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,21 +50,22 @@ fun SettingsScreen(navController: NavController) {
     val language by settingsRepository.languageFlow.collectAsState(initial = "zh")
     val themeMode by settingsRepository.themeModeFlow.collectAsState(initial = 0)
     val dohEnabled by settingsRepository.dohEnabledFlow.collectAsState(initial = false)
+    val dohProvider by settingsRepository.dohProviderFlow.collectAsState(initial = "opendns")
     val adBlockEnabled by settingsRepository.adBlockEnabledFlow.collectAsState(initial = false)
     val trackerBlockEnabled by settingsRepository.trackerBlockEnabledFlow.collectAsState(initial = false)
     val incognitoEnabled by settingsRepository.incognitoEnabledFlow.collectAsState(initial = false)
     val safeBrowsingEnabled by settingsRepository.safeBrowsingEnabledFlow.collectAsState(initial = true)
     val forceEnableCopyPaste by settingsRepository.forceEnableCopyPasteFlow.collectAsState(initial = false)
     val removeRedirectPromptEnabled by settingsRepository.removeRedirectPromptEnabledFlow.collectAsState(initial = false)
-    val quicEnabled by settingsRepository.quicEnabledFlow.collectAsState(initial = false)
     val searchEngine by settingsRepository.searchEngineFlow.collectAsState(initial = 0)
 
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showSearchEngineDialog by remember { mutableStateOf(false) }
     var showNetDiagDialog by remember { mutableStateOf(false) }
+    var showDohProviderDialog by remember { mutableStateOf(false) }
 
-    // Password Manager state (top-level for dialog access)
+    // Password Manager state
     val pmEncryptionEnabled by settingsRepository.pmEncryptionEnabledFlow.collectAsState(initial = false)
     val pmRealPasswordHash by settingsRepository.pmRealPasswordHashFlow.collectAsState(initial = "")
     val pmEmergencyPasswordHash by settingsRepository.pmEmergencyPasswordHashFlow.collectAsState(initial = "")
@@ -131,7 +126,6 @@ fun SettingsScreen(navController: NavController) {
             modifier = Modifier.clickable { showSearchEngineDialog = true }
         )
 
-        // ---- Account & Password ----
         Text(
             text = stringResource(R.string.settings_category_account),
             style = MaterialTheme.typography.titleSmall,
@@ -139,26 +133,23 @@ fun SettingsScreen(navController: NavController) {
             modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
         )
 
-        // Password Manager
-
+        // Password Manager Entry
         ListItem(
             headlineContent = { Text(stringResource(R.string.settings_password_manager)) },
             supportingContent = { Text(stringResource(R.string.settings_password_manager_desc)) },
+            leadingContent = { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
             trailingContent = { Icon(Icons.Default.KeyboardArrowRight, contentDescription = null) },
             modifier = Modifier.clickable {
                 if (pmEncryptionEnabled && pmRealPasswordHash.isNotEmpty()) {
-                    // Check lockout
-                    val now = System.currentTimeMillis()
+                    val now = SystemClock.elapsedRealtime()
                     if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp < 3600_000L) {
                         Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
                     } else {
-                        // Check if within 30-minute session
                         if (now - pmLastAuthTimestamp < 30 * 60 * 1000L) {
                             navController.navigate("password_manager")
                         } else {
-                            // Reset lockout if 1 hour has passed
                             if (pmLockoutTimestamp > 0 && now - pmLockoutTimestamp >= 3600_000L) {
-                                scope.launch(kotlinx.coroutines.Dispatchers.IO) { settingsRepository.resetPmLockout() }
+                                scope.launch(Dispatchers.IO) { settingsRepository.resetPmLockout() }
                             }
                             pmInputPassword = ""
                             showPmPasswordDialog = true
@@ -177,7 +168,7 @@ fun SettingsScreen(navController: NavController) {
             modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
         )
 
-        // DoH Toggle
+        // DoH Toggle (Option A ProxyController based)
         ListItem(
             headlineContent = { Text(stringResource(R.string.settings_doh_title)) },
             supportingContent = { Text(stringResource(R.string.settings_doh_desc)) },
@@ -185,6 +176,23 @@ fun SettingsScreen(navController: NavController) {
                 Switch(checked = dohEnabled, onCheckedChange = { scope.launch { settingsRepository.setDohEnabled(it) } })
             }
         )
+
+        if (dohEnabled) {
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_doh_provider_title)) },
+                supportingContent = {
+                    Text(
+                        when (dohProvider.lowercase()) {
+                            "cloudflare" -> stringResource(R.string.doh_provider_cloudflare)
+                            "google" -> stringResource(R.string.doh_provider_google)
+                            else -> stringResource(R.string.doh_provider_opendns)
+                        }
+                    )
+                },
+                trailingContent = { Icon(Icons.Default.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { showDohProviderDialog = true }
+            )
+        }
 
         // Ad Block Toggle
         ListItem(
@@ -222,15 +230,6 @@ fun SettingsScreen(navController: NavController) {
             }
         )
 
-        // QUIC Toggle
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.settings_quic_title)) },
-            supportingContent = { Text(stringResource(R.string.settings_quic_desc)) },
-            trailingContent = {
-                Switch(checked = quicEnabled, onCheckedChange = { scope.launch { settingsRepository.setQuicEnabled(it) } })
-            }
-        )
-
         Text(
             text = stringResource(R.string.settings_category_extensions),
             style = MaterialTheme.typography.titleSmall,
@@ -265,27 +264,19 @@ fun SettingsScreen(navController: NavController) {
             }
         )
 
-        Divider(modifier = Modifier.padding(vertical = 16.dp))
-
-        // About Us
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.settings_about)) },
-            modifier = Modifier.clickable { navController.navigate("about") },
-            trailingContent = { Icon(androidx.compose.material.icons.Icons.Default.KeyboardArrowRight, contentDescription = null) }
-        )
-
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Clear Browsing Data
+        // Clear Browsing History
         Button(
             onClick = {
-                scope.launch {
+                scope.launch(Dispatchers.IO) {
                     db.historyDao().clearAllHistory()
-                    val msg = context.getString(R.string.settings_clear_history_toast)
-                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, context.getString(R.string.settings_clear_history_toast), Toast.LENGTH_SHORT).show()
+                    }
                 }
             },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
         ) {
             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
             Text(stringResource(R.string.settings_clear_history))
@@ -296,7 +287,6 @@ fun SettingsScreen(navController: NavController) {
             onClick = {
                 scope.launch {
                     db.historyDao().clearAllHistory()
-                    db.downloadDao().clearAllDownloads()
                     CookieManager.getInstance().removeAllCookies(null)
                     CookieManager.getInstance().flush()
                     WebStorage.getInstance().deleteAllData()
@@ -366,9 +356,39 @@ fun SettingsScreen(navController: NavController) {
                     )
                     engines.forEach { (mode, name) ->
                         Text(name, modifier = Modifier.fillMaxWidth().clickable {
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) { settingsRepository.setSearchEngine(mode) }
+                            scope.launch(Dispatchers.IO) { settingsRepository.setSearchEngine(mode) }
                             showSearchEngineDialog = false
                         }.padding(16.dp))
+                    }
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    if (showDohProviderDialog) {
+        AlertDialog(
+            onDismissRequest = { showDohProviderDialog = false },
+            title = { Text(stringResource(R.string.settings_doh_provider_title)) },
+            text = {
+                Column {
+                    val providers = listOf(
+                        "opendns" to stringResource(R.string.doh_provider_opendns),
+                        "cloudflare" to stringResource(R.string.doh_provider_cloudflare),
+                        "google" to stringResource(R.string.doh_provider_google)
+                    )
+                    providers.forEach { (key, name) ->
+                        Text(
+                            text = name,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    scope.launch { settingsRepository.setDohProvider(key) }
+                                    showDohProviderDialog = false
+                                }
+                                .padding(16.dp),
+                            color = if (dohProvider.equals(key, ignoreCase = true)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
                     }
                 }
             },
@@ -388,7 +408,7 @@ fun SettingsScreen(navController: NavController) {
                     onValueChange = { pmInputPassword = it },
                     label = { Text(stringResource(R.string.pm_password)) },
                     singleLine = true,
-                    visualTransformation = if (showPwText) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    visualTransformation = if (showPwText) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
                         IconButton(onClick = { showPwText = !showPwText }) {
                             Icon(
@@ -404,41 +424,39 @@ fun SettingsScreen(navController: NavController) {
                 TextButton(onClick = {
                     when {
                         SettingsRepository.verifyPassword(pmInputPassword, pmRealPasswordHash) -> {
-                            // Correct real password
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val salt = SettingsRepository.getSaltFromHash(pmRealPasswordHash) ?: "syncbrow_default_salt".toByteArray()
+                            CryptoManager.setSessionPassword(pmInputPassword, salt)
+                            scope.launch(Dispatchers.IO) {
                                 settingsRepository.resetPmLockout()
-                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                                settingsRepository.setPmLastAuthTimestamp(SystemClock.elapsedRealtime())
                             }
                             Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
                             showPmPasswordDialog = false
                             navController.navigate("password_manager")
                         }
                         pmEmergencyPasswordHash.isNotEmpty() && SettingsRepository.verifyPassword(pmInputPassword, pmEmergencyPasswordHash) -> {
-                            // Emergency password: wipe all passwords silently, navigate normally
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                val pmDb = AppDatabase.getDatabase(context)
-                                pmDb.passwordDao().deleteAllPasswords()
+                            // Emergency password: do NOT wipe real passwords; open password_manager in Decoy Mode
+                            scope.launch(Dispatchers.IO) {
                                 settingsRepository.resetPmLockout()
-                                settingsRepository.setPmLastAuthTimestamp(System.currentTimeMillis())
+                                settingsRepository.setPmLastAuthTimestamp(SystemClock.elapsedRealtime())
                             }
                             Toast.makeText(context, context.getString(R.string.pm_password_correct), Toast.LENGTH_SHORT).show()
                             showPmPasswordDialog = false
                             navController.navigate("password_manager")
                         }
                         else -> {
-                            // Wrong password
                             val newAttempts = pmFailedAttempts + 1
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            scope.launch(Dispatchers.IO) {
                                 if (newAttempts >= 10) {
                                     settingsRepository.setPmFailedAttempts(newAttempts)
-                                    settingsRepository.setPmLockoutTimestamp(System.currentTimeMillis())
-                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    settingsRepository.setPmLockoutTimestamp(SystemClock.elapsedRealtime())
+                                    withContext(Dispatchers.Main) {
                                         Toast.makeText(context, context.getString(R.string.pm_locked_out), Toast.LENGTH_LONG).show()
                                         showPmPasswordDialog = false
                                     }
                                 } else {
                                     settingsRepository.setPmFailedAttempts(newAttempts)
-                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    withContext(Dispatchers.Main) {
                                         val remaining: Int = 10 - newAttempts
                                         Toast.makeText(context, context.getString(R.string.pm_password_wrong, remaining), Toast.LENGTH_SHORT).show()
                                         pmInputPassword = ""
@@ -467,7 +485,6 @@ fun SettingsScreen(navController: NavController) {
 @Composable
 fun NetworkDiagnosisDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     
     var isChecking by remember { mutableStateOf(true) }
     
@@ -493,7 +510,7 @@ fun NetworkDiagnosisDialog(onDismiss: () -> Unit) {
             
             statusOnline = if (isOnline) 1 else 2
 
-            // 2. DNS Check (dns.google with fallback to alidns.com)
+            // 2. DNS Check
             try {
                 val addresses = try {
                     InetAddress.getAllByName("dns.google")
@@ -505,7 +522,7 @@ fun NetworkDiagnosisDialog(onDismiss: () -> Unit) {
                 statusDns = 2
             }
 
-            // 3. IP Connectivity (Multi-endpoint fallback: Cloudflare, Google, AliDNS)
+            // 3. IP Connectivity
             val testEndpoints = listOf(
                 "1.1.1.1" to 53,
                 "8.8.8.8" to 53,
@@ -602,7 +619,7 @@ fun DiagItem(label: String, status: Int, statusStrings: List<Int>) {
         }
         
         when (status) {
-            0 -> { // Checking
+            0 -> {
                 val infiniteTransition = rememberInfiniteTransition()
                 val angle by infiniteTransition.animateFloat(
                     initialValue = 0f,
@@ -619,7 +636,7 @@ fun DiagItem(label: String, status: Int, statusStrings: List<Int>) {
                     tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
                 )
             }
-            1 -> { // Normal / Yes / Not Exist
+            1 -> {
                 Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(20.dp))
                 Text(
                     stringResource(statusStrings[0]),
@@ -628,7 +645,7 @@ fun DiagItem(label: String, status: Int, statusStrings: List<Int>) {
                     modifier = Modifier.padding(start = 4.dp)
                 )
             }
-            2 -> { // Abnormal / No / Exist
+            2 -> {
                 Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
                 Text(
                     stringResource(statusStrings[1]),
@@ -637,7 +654,7 @@ fun DiagItem(label: String, status: Int, statusStrings: List<Int>) {
                     modifier = Modifier.padding(start = 4.dp)
                 )
             }
-            3 -> { // Skipped
+            3 -> {
                 Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFFC107), modifier = Modifier.size(20.dp))
                 Text(
                     stringResource(R.string.net_diag_status_unknown),
