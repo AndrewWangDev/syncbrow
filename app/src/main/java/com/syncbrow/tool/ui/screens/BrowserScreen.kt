@@ -185,9 +185,10 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
 
     var isDecoySession by rememberSaveable { mutableStateOf(false) }
 
-    val decoyPasswords = remember {
-        DecoyCredentialFactory.generateDecoyAccounts()
+    var decoyPasswords by remember {
+        mutableStateOf(DecoyCredentialFactory.generateDecoyAccounts())
     }
+    var deletedDecoyIds by remember { mutableStateOf(setOf<Long>()) }
 
     // Extract host and parent domain for safe password matching (handling multi-part TLDs like .co.uk, .com.cn)
     val (currentHost, parentHost) = remember(currentDisplayUrl) {
@@ -220,17 +221,20 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
         }
     }.collectAsState(initial = emptyList())
 
-    val displayedSitePasswords = remember(isDecoySession, sitePasswords, currentHost, parentHost, decoyPasswords) {
+    val displayedSitePasswords = remember(isDecoySession, sitePasswords, currentHost, parentHost, decoyPasswords, deletedDecoyIds) {
         if (isDecoySession) {
             val matched = decoyPasswords.filter {
-                it.siteName.equals(currentHost, ignoreCase = true) ||
-                it.siteName.equals(parentHost, ignoreCase = true) ||
-                currentHost.endsWith("." + it.siteName)
+                it.id !in deletedDecoyIds && (
+                    it.siteName.equals(currentHost, ignoreCase = true) ||
+                    it.siteName.equals(parentHost, ignoreCase = true) ||
+                    currentHost.endsWith("." + it.siteName)
+                )
             }
             if (matched.isNotEmpty()) {
                 matched
             } else if (currentHost.isNotBlank() && currentHost != "about:blank" && currentHost.contains(".")) {
-                listOf(DecoyCredentialFactory.generateDecoyForSite(currentHost))
+                val siteDecoy = DecoyCredentialFactory.generateDecoyForSite(currentHost)
+                if (siteDecoy.id !in deletedDecoyIds) listOf(siteDecoy) else emptyList()
             } else {
                 emptyList()
             }
@@ -1044,30 +1048,65 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                             Toast.makeText(context, context.getString(R.string.pm_password_decrypt_failed), Toast.LENGTH_SHORT).show()
                             return@TextButton
                         }
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                val encrypted = CryptoManager.encrypt(browserPmInputPassword.trim())
-                                if (isEdit) {
-                                    passwordDao.updatePassword(browserPmEditingPassword!!.copy(
-                                        siteName = browserPmInputSite.trim(),
-                                        username = browserPmInputUsername.trim(),
-                                        password = encrypted
-                                    ))
+                        if (isDecoySession) {
+                            if (isEdit) {
+                                val targetId = browserPmEditingPassword!!.id
+                                if (decoyPasswords.any { it.id == targetId }) {
+                                    decoyPasswords = decoyPasswords.map {
+                                        if (it.id == targetId) {
+                                            it.copy(
+                                                siteName = browserPmInputSite.trim(),
+                                                username = browserPmInputUsername.trim(),
+                                                password = browserPmInputPassword.trim()
+                                            )
+                                        } else it
+                                    }
                                 } else {
-                                    passwordDao.insertPassword(PasswordEntity(
+                                    decoyPasswords = decoyPasswords + PasswordEntity(
+                                        id = targetId,
                                         siteName = browserPmInputSite.trim(),
                                         username = browserPmInputUsername.trim(),
-                                        password = encrypted
-                                    ))
+                                        password = browserPmInputPassword.trim(),
+                                        timestamp = System.currentTimeMillis()
+                                    )
                                 }
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
-                                    showBrowserPmAddEdit = false
-                                }
-                            } catch (e: Exception) {
-                                Log.e("BrowserScreen", "Failed to encrypt password", e)
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, context.getString(R.string.pm_password_encrypt_failed), Toast.LENGTH_SHORT).show()
+                            } else {
+                                decoyPasswords = decoyPasswords + PasswordEntity(
+                                    id = -System.currentTimeMillis(),
+                                    siteName = browserPmInputSite.trim(),
+                                    username = browserPmInputUsername.trim(),
+                                    password = browserPmInputPassword.trim(),
+                                    timestamp = System.currentTimeMillis()
+                                )
+                            }
+                            Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
+                            showBrowserPmAddEdit = false
+                        } else {
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    val encrypted = CryptoManager.encrypt(browserPmInputPassword.trim())
+                                    if (isEdit) {
+                                        passwordDao.updatePassword(browserPmEditingPassword!!.copy(
+                                            siteName = browserPmInputSite.trim(),
+                                            username = browserPmInputUsername.trim(),
+                                            password = encrypted
+                                        ))
+                                    } else {
+                                        passwordDao.insertPassword(PasswordEntity(
+                                            siteName = browserPmInputSite.trim(),
+                                            username = browserPmInputUsername.trim(),
+                                            password = encrypted
+                                        ))
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, context.getString(R.string.pm_password_saved), Toast.LENGTH_SHORT).show()
+                                        showBrowserPmAddEdit = false
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("BrowserScreen", "Failed to encrypt password", e)
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, context.getString(R.string.pm_password_encrypt_failed), Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             }
                         }
@@ -1095,10 +1134,16 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
                     val toDelete = browserPmDeleteTarget!!
                     showBrowserPmDeleteConfirm = false
                     browserPmDeleteTarget = null
-                    scope.launch(Dispatchers.IO) {
-                        passwordDao.deletePassword(toDelete)
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, context.getString(R.string.pm_password_deleted), Toast.LENGTH_SHORT).show()
+                    if (isDecoySession) {
+                        deletedDecoyIds = deletedDecoyIds + toDelete.id
+                        decoyPasswords = decoyPasswords.filter { it.id != toDelete.id }
+                        Toast.makeText(context, context.getString(R.string.pm_password_deleted), Toast.LENGTH_SHORT).show()
+                    } else {
+                        scope.launch(Dispatchers.IO) {
+                            passwordDao.deletePassword(toDelete)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, context.getString(R.string.pm_password_deleted), Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 }) {

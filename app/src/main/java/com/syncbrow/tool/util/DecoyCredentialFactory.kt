@@ -27,15 +27,16 @@ object DecoyCredentialFactory {
 
     fun generateDecoyForSite(siteName: String, seed: Long = BASE_SEED): PasswordEntity {
         val siteHash = siteName.lowercase().hashCode().toLong()
-        return createEntity(siteName, seed xor siteHash, -200L - (Math.abs(siteHash) % 1000L))
+        val siteOffset = (siteHash and 0x7FFFFFFFL) % 1000L
+        return createEntity(siteName, seed xor siteHash, -200L - siteOffset)
     }
 
     private fun createEntity(site: String, seed: Long, id: Long): PasswordEntity {
         val rng = Random(seed)
-        val firstName = FIRST_NAMES[Math.abs(rng.nextInt()) % FIRST_NAMES.size]
-        val initial = LAST_INITIALS[Math.abs(rng.nextInt()) % LAST_INITIALS.size]
-        val num = 100 + (Math.abs(rng.nextInt()) % 900)
-        val domain = DOMAINS[Math.abs(rng.nextInt()) % DOMAINS.size]
+        val firstName = FIRST_NAMES[rng.nextInt(FIRST_NAMES.size)]
+        val initial = LAST_INITIALS[rng.nextInt(LAST_INITIALS.size)]
+        val num = 100 + rng.nextInt(900)
+        val domain = DOMAINS[rng.nextInt(DOMAINS.size)]
 
         val username = if (site.contains("github")) {
             "${firstName}_${initial}$num"
@@ -44,7 +45,7 @@ object DecoyCredentialFactory {
         }
 
         val password = buildComplexPassword(rng)
-        val daysAgo = 10 + (Math.abs(rng.nextInt()) % 60)
+        val daysAgo = 10 + rng.nextInt(60)
         val timestamp = System.currentTimeMillis() - daysAgo * 86_400_000L
 
         return PasswordEntity(
@@ -64,15 +65,15 @@ object DecoyCredentialFactory {
         val all = uppers + lowers + digits + symbols
 
         val chars = CharArray(length)
-        chars[0] = uppers[Math.abs(rng.nextInt()) % uppers.length]
-        chars[1] = lowers[Math.abs(rng.nextInt()) % lowers.length]
-        chars[2] = digits[Math.abs(rng.nextInt()) % digits.length]
-        chars[3] = symbols[Math.abs(rng.nextInt()) % symbols.length]
+        chars[0] = uppers[rng.nextInt(uppers.length)]
+        chars[1] = lowers[rng.nextInt(lowers.length)]
+        chars[2] = digits[rng.nextInt(digits.length)]
+        chars[3] = symbols[rng.nextInt(symbols.length)]
         for (i in 4 until length) {
-            chars[i] = all[Math.abs(rng.nextInt()) % all.length]
+            chars[i] = all[rng.nextInt(all.length)]
         }
         for (i in chars.indices) {
-            val j = Math.abs(rng.nextInt()) % chars.size
+            val j = rng.nextInt(chars.size)
             val temp = chars[i]
             chars[i] = chars[j]
             chars[j] = temp
