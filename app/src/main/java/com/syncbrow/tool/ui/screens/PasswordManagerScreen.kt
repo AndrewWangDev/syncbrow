@@ -31,6 +31,7 @@ import com.syncbrow.tool.data.AppDatabase
 import com.syncbrow.tool.data.PasswordEntity
 import com.syncbrow.tool.data.SettingsRepository
 import com.syncbrow.tool.util.CryptoManager
+import com.syncbrow.tool.util.DecoyCredentialFactory
 import com.syncbrow.tool.util.PasswordUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -70,17 +71,9 @@ fun PasswordManagerScreen(navController: NavController) {
     var authInputPassword by remember { mutableStateOf("") }
     var showAuthPwText by remember { mutableStateOf(false) }
 
-    // Preset believable decoy credentials
+    // Dynamically generated believable decoy credentials
     var decoyPasswords by remember {
-        mutableStateOf(
-            listOf(
-                PasswordEntity(id = -101, siteName = "google.com", username = "user_decoy1@example.invalid", password = "REDACTED_DECOY_PW_01", timestamp = System.currentTimeMillis()),
-                PasswordEntity(id = -102, siteName = "github.com", username = "dev_decoy2", password = "REDACTED_DECOY_TOKEN_01", timestamp = System.currentTimeMillis()),
-                PasswordEntity(id = -103, siteName = "microsoft.com", username = "user_decoy3@example.invalid", password = "REDACTED_DECOY_PW_02", timestamp = System.currentTimeMillis()),
-                PasswordEntity(id = -104, siteName = "amazon.com", username = "user_decoy1@example.invalid", password = "REDACTED_DECOY_PW_03", timestamp = System.currentTimeMillis()),
-                PasswordEntity(id = -105, siteName = "netflix.com", username = "user_decoy1@example.invalid", password = "REDACTED_DECOY_PW_04", timestamp = System.currentTimeMillis())
-            )
-        )
+        mutableStateOf(DecoyCredentialFactory.generateDecoyAccounts())
     }
 
     // Monotonic clock for session and lockout

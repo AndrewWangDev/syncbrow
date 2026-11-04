@@ -73,6 +73,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import com.syncbrow.tool.util.DecoyCredentialFactory
 import com.syncbrow.tool.util.PasswordUtils
 import kotlinx.coroutines.withContext
 
@@ -185,13 +186,7 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
     var isDecoySession by rememberSaveable { mutableStateOf(false) }
 
     val decoyPasswords = remember {
-        listOf(
-            PasswordEntity(id = -101, siteName = "google.com", username = "user_decoy1@example.invalid", password = "REDACTED_DECOY_PW_01", timestamp = System.currentTimeMillis()),
-            PasswordEntity(id = -102, siteName = "github.com", username = "dev_decoy2", password = "REDACTED_DECOY_TOKEN_01", timestamp = System.currentTimeMillis()),
-            PasswordEntity(id = -103, siteName = "microsoft.com", username = "user_decoy3@example.invalid", password = "REDACTED_DECOY_PW_02", timestamp = System.currentTimeMillis()),
-            PasswordEntity(id = -104, siteName = "amazon.com", username = "user_decoy1@example.invalid", password = "REDACTED_DECOY_PW_03", timestamp = System.currentTimeMillis()),
-            PasswordEntity(id = -105, siteName = "netflix.com", username = "user_decoy1@example.invalid", password = "REDACTED_DECOY_PW_04", timestamp = System.currentTimeMillis())
-        )
+        DecoyCredentialFactory.generateDecoyAccounts()
     }
 
     // Extract host and parent domain for safe password matching (handling multi-part TLDs like .co.uk, .com.cn)
@@ -227,10 +222,17 @@ fun BrowserScreen(navController: NavController, initialUrl: String? = null) {
 
     val displayedSitePasswords = remember(isDecoySession, sitePasswords, currentHost, parentHost, decoyPasswords) {
         if (isDecoySession) {
-            decoyPasswords.filter {
+            val matched = decoyPasswords.filter {
                 it.siteName.equals(currentHost, ignoreCase = true) ||
                 it.siteName.equals(parentHost, ignoreCase = true) ||
                 currentHost.endsWith("." + it.siteName)
+            }
+            if (matched.isNotEmpty()) {
+                matched
+            } else if (currentHost.isNotBlank() && currentHost != "about:blank" && currentHost.contains(".")) {
+                listOf(DecoyCredentialFactory.generateDecoyForSite(currentHost))
+            } else {
+                emptyList()
             }
         } else {
             sitePasswords
