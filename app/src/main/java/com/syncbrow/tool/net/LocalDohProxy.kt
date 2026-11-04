@@ -20,6 +20,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 object LocalDohProxy {
     private const val TAG = "LocalDohProxy"
+    private const val MAX_LINE_LENGTH = 8192
+
+    private class LineTooLongException(message: String) : java.io.IOException(message)
+
     private var serverSocket: ServerSocket? = null
     private var proxyJob: Job? = null
     private val isRunning = AtomicBoolean(false)
@@ -277,6 +281,14 @@ object LocalDohProxy {
                 }
                 client.close()
             }
+        } catch (e: LineTooLongException) {
+            Log.w(TAG, "Request line too long: ${e.message}")
+            try {
+                val outStream = client.getOutputStream()
+                outStream.write("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                outStream.flush()
+            } catch (_: Exception) {}
+            try { client.close() } catch (_: Exception) {}
         } catch (e: Exception) {
             try { client.close() } catch (_: Exception) {}
         } finally {
@@ -284,10 +296,15 @@ object LocalDohProxy {
         }
     }
 
-    private fun readLine(input: InputStream): String? {
+    private fun readLine(input: InputStream, maxLen: Int = MAX_LINE_LENGTH): String? {
         val sb = StringBuilder()
         var b: Int
+        var count = 0
         while (input.read().also { b = it } != -1) {
+            count++
+            if (count > maxLen) {
+                throw LineTooLongException("HTTP line exceeded maximum length of $maxLen bytes")
+            }
             if (b == '\n'.code) break
             if (b != '\r'.code) sb.append(b.toChar())
         }
