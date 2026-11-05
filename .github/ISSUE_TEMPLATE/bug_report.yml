@@ -8,7 +8,7 @@ body:
       value: |
         Thanks for taking the time to report an issue!
         
-        > **Security Notice**: If this report involves a security vulnerability (e.g., cryptographic failure, credential leak, DoH bypass), please **do NOT** submit it publicly here. File a private disclosure under [Security Advisories](https://github.com/AndrewWangDev/SyncBrow/security/advisories/new) instead. Note that only SyncBrow versions **>= 2.0.0** are supported.
+        > **Security Notice**: If this report involves a security vulnerability (e.g., cryptographic failure, credential leak, DoH bypass), please **do NOT** submit it publicly here. File a private disclosure under [Security Advisories](https://github.com/AndrewWangDev/syncbrow/security/advisories/new) instead. Note that only SyncBrow versions **>= 2.0.0** are supported.
   - type: textarea
     id: description
     attributes:
