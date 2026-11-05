@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Security & Privacy Vulnerability
+    url: https://github.com/AndrewWangDev/SyncBrow/security/advisories/new
+    about: Report security or privacy vulnerabilities privately via GitHub Security Advisories.
+  - name: 💬 Discussions & Q&A
+    url: https://github.com/AndrewWangDev/SyncBrow/discussions
+    about: Ask questions, share feedback, or discuss general architecture ideas.

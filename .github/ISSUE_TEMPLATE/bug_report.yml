@@ -1,0 +1,74 @@
+name: 🐛 Bug Report
+description: Report an issue or unexpected behavior to help improve SyncBrow.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+        
+        > **Security Notice**: If this report involves a security vulnerability (e.g., cryptographic failure, credential leak, DoH bypass), please **do NOT** submit it publicly here. File a private disclosure under [Security Advisories](https://github.com/AndrewWangDev/SyncBrow/security/advisories/new) instead. Note that only SyncBrow versions **>= 2.0.0** are supported.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: "When doing X, Y happens instead of Z..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Step-by-step instructions to reproduce the behavior.
+      placeholder: |
+        1. Open Settings -> Secure DNS
+        2. Select 'Cloudflare'
+        3. Navigate to a test URL
+        4. See error...
+    validations:
+      required: true
+  - type: input
+    id: syncbrow_version
+    attributes:
+      label: SyncBrow Version
+      description: What version of SyncBrow are you using? (Must be >= 2.0.0)
+      placeholder: "v2.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: android_version
+    attributes:
+      label: Android OS Version
+      options:
+        - Android 14 (API 34)
+        - Android 13 (API 33)
+        - Android 12 / 12L (API 31/32)
+        - Android 11 (API 30)
+        - Android 10 (API 29)
+        - Android 8.0 - 9.0 (API 26-28)
+    validations:
+      required: true
+  - type: input
+    id: device_model
+    attributes:
+      label: Device Model
+      placeholder: "e.g., Google Pixel 8 Pro / Samsung Galaxy S23"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logcat / Stacktrace
+      description: Paste relevant logcat outputs or error logs (sanitize any private URLs or credentials).
+      render: shell
+  - type: checkboxes
+    id: checkboxes
+    attributes:
+      label: Self Check
+      options:
+        - label: I have searched existing issues and verified this is not a duplicate.
+          required: true
+        - label: I am using SyncBrow >= 2.0.0 or the latest commit on `main`.
+          required: true

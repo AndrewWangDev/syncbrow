@@ -1,0 +1,36 @@
+name: 💡 Feature Request / Proposal
+description: Suggest an enhancement, architectural improvement, or new privacy feature.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting improvements to SyncBrow!
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a specific limitation or pain point?
+      placeholder: "I find it inconvenient that..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution & Technical Details
+      description: Describe the solution you would like to see, including any UI or architectural design ideas.
+      placeholder: "Add support for custom DoH endpoints by allowing users to enter a custom URL..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any alternative solutions or workarounds you considered.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be interested in submitting a pull request for this feature.
