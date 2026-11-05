@@ -1,5 +1,6 @@
 # SyncBrow
 
+[![CI](https://github.com/AndrewWangDev/SyncBrow/actions/workflows/ci.yml/badge.svg)](https://github.com/AndrewWangDev/SyncBrow/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-green.svg)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-1.9.22-purple.svg)](https://kotlinlang.org)

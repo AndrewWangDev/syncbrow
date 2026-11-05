@@ -1,0 +1,69 @@
+name: SyncBrow CI & Quality Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Explicit least-privilege permission declaration for enterprise DevSecOps compliance
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+
+# Prevent redundant workflow executions when rapidly pushing new commits
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Lint, Test & Release Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 21 LTS
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Grant Execute Permission to Gradle Wrapper
+        run: chmod +x ./gradlew
+
+      - name: Run Unit Tests
+        run: ./gradlew test --stacktrace
+
+      - name: Run Lint & Vital Analysis
+        run: ./gradlew lintVitalRelease --stacktrace
+
+      - name: Assemble Release APK (R8 Obfuscation & Shrinking)
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: app/build/reports/tests/
+          retention-days: 7
+
+      - name: Upload Release APK Artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncbrow-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 14
